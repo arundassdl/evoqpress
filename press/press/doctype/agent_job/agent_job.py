@@ -1189,12 +1189,49 @@ def update_job_step_status():
 		).run()
 
 
+# def on_doctype_update():
+# 	frappe.db.add_index("Agent Job", ["status", "server"])
+# 	frappe.db.add_index("Agent Job", ["reference_doctype", "reference_name"])
+# 	# We don't need modified index, it's harmful on constantly updating tables
+# 	frappe.db.sql_ddl("drop index if exists modified on `tabAgent Job`")
+# 	frappe.db.add_index("Agent Job", ["creation"])
+
 def on_doctype_update():
-	frappe.db.add_index("Agent Job", ["status", "server"])
-	frappe.db.add_index("Agent Job", ["reference_doctype", "reference_name"])
-	# We don't need modified index, it's harmful on constantly updating tables
-	frappe.db.sql_ddl("drop index if exists modified on `tabAgent Job`")
-	frappe.db.add_index("Agent Job", ["creation"])
+    doctype = "Agent Job"
+
+    # keep these indexes
+    frappe.db.add_index(doctype, ["status", "server"])
+    frappe.db.add_index(doctype, ["reference_doctype", "reference_name"])
+
+    # We don't want an index on `modified` (it is harmful for frequently-updated tables).
+    # Drop it safely depending on DB backend.
+    try:
+        db_type = getattr(frappe.db, "db_type", "") or frappe.conf.get("db_type")
+    except Exception:
+        db_type = None
+
+    if db_type == "postgres":
+        # On Postgres we must DROP INDEX by index name. Find any index on this table
+        # whose definition mentions the `modified` column and drop it.
+        rows = frappe.db.sql(
+            """
+            SELECT indexname
+            FROM pg_indexes
+            WHERE tablename = %s
+              AND indexdef ILIKE %s
+            """,
+            (doctype, "%modified%")
+        )
+        for r in rows or []:
+            index_name = r[0]
+            # use sql_ddl to run DDL; quote the index name to be safe
+            frappe.db.sql_ddl(f'DROP INDEX IF EXISTS "{index_name}";')
+    else:
+        # MySQL / MariaDB: original syntax is fine
+        frappe.db.sql_ddl("DROP INDEX IF EXISTS modified ON `tabAgent Job`;")
+
+    # re-add creation index
+    frappe.db.add_index(doctype, ["creation"])
 
 
 def to_str(data) -> str:
