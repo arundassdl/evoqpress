@@ -256,30 +256,21 @@ class TLSCertificate(Document):
 	# from OpenSSL import crypto
 
 	def _get_private_key_object(self):
-		"""Load the private key object from the PEM file path or raw PEM data."""
-		from OpenSSL import crypto
-		import os
-		import frappe
-
+		"""
+		Load the private key from the PEM file.
+		Returns OpenSSL.crypto.PKey object.
+		"""
 		try:
-			private_key_data = self.private_key
-
-			# If field contains a file path, read the file
-			if isinstance(private_key_data, str) and os.path.exists(private_key_data):
-				with open(private_key_data, "rb") as f:
+			# If self.private_key is a file path, read its contents
+			if isinstance(self.private_key, str):
+				with open(self.private_key, "rb") as f:
 					private_key_data = f.read()
+			else:
+				private_key_data = self.private_key
 
-			# Ensure data starts with valid PEM header
-			if b"BEGIN" not in private_key_data:
-				raise frappe.ValidationError(
-					"Invalid private key content. Expected PEM format (BEGIN/END markers missing)."
-				)
-
-			# Load key
-			return crypto.load_privatekey(crypto.FILETYPE_PEM, private_key_data)
-
+			return OpenSSL.crypto.load_privatekey(OpenSSL.crypto.FILETYPE_PEM, private_key_data)
 		except Exception as e:
-			frappe.log_error(frappe.get_traceback(), "TLS Certificate: Private Key Load Failed")
+			frappe.log_error(frappe.get_traceback(), "TLS Private Key Load Error")
 			raise e
 
 
@@ -302,43 +293,13 @@ class TLSCertificate(Document):
 			raise e
 
 
-	# def validate_key_length(self):
-	# 	private_key = self._get_private_key_object()
-
-	# 	if private_key.bits() != int(self.rsa_key_size):
-	# 		frappe.throw(
-	# 			f"Private key length does not match the selected RSA key size. Expected {self.rsa_key_size} bits, got {private_key.bits()} bits."
-	# 		)
-
 	def validate_key_length(self):
-		"""Validate RSA key length, skip EC keys."""
-		from OpenSSL import crypto
+		private_key = self._get_private_key_object()
 
-		try:
-			private_key = self._get_private_key_object()
-
-			# Determine key type
-			key_type = private_key.type()
-
-			# EC (Elliptic Curve) keys don’t use RSA key sizes like 2048
-			if key_type == crypto.TYPE_EC:
-				frappe.logger().info("TLS Certificate: Detected EC private key, skipping RSA key length validation.")
-				return
-
-			# RSA key: check bit length
-			key_size = private_key.bits()
-			expected_size = int(self.rsa_key_size or 2048)
-
-			if key_size != expected_size:
-				frappe.throw(
-					_(
-						"Private key length does not match the selected RSA key size. Expected {0} bits, got {1} bits."
-					).format(expected_size, key_size)
-				)
-
-		except Exception as e:
-			frappe.log_error(frappe.get_traceback(), "TLS Certificate Key Validation Error")
-			raise e
+		if private_key.bits() != int(self.rsa_key_size):
+			frappe.throw(
+				f"Private key length does not match the selected RSA key size. Expected {self.rsa_key_size} bits, got {private_key.bits()} bits."
+			)
 
 	def validate_key_certificate_association(self):
 		context = OpenSSL.SSL.Context(OpenSSL.SSL.TLSv1_METHOD)
