@@ -283,7 +283,6 @@ class TLSCertificate(Document):
 			raise e
 
 
-
 	def _get_certificate_object(self, cert_path=None):
 		"""
 		Load the certificate from PEM file.
