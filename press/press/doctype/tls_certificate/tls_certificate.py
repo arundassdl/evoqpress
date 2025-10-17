@@ -293,13 +293,43 @@ class TLSCertificate(Document):
 			raise e
 
 
-	def validate_key_length(self):
-		private_key = self._get_private_key_object()
+	# def validate_key_length(self):
+	# 	private_key = self._get_private_key_object()
 
-		if private_key.bits() != int(self.rsa_key_size):
-			frappe.throw(
-				f"Private key length does not match the selected RSA key size. Expected {self.rsa_key_size} bits, got {private_key.bits()} bits."
-			)
+	# 	if private_key.bits() != int(self.rsa_key_size):
+	# 		frappe.throw(
+	# 			f"Private key length does not match the selected RSA key size. Expected {self.rsa_key_size} bits, got {private_key.bits()} bits."
+	# 		)
+	
+	def validate_key_length(self):
+		"""Validate RSA key length, skip EC keys."""
+		from OpenSSL import crypto
+
+		try:
+			private_key = self._get_private_key_object()
+
+			# Determine key type
+			key_type = private_key.type()
+
+			# EC (Elliptic Curve) keys don’t use RSA key sizes like 2048
+			if key_type == crypto.TYPE_EC:
+				frappe.logger().info("TLS Certificate: Detected EC private key, skipping RSA key length validation.")
+				return
+
+			# RSA key: check bit length
+			key_size = private_key.bits()
+			expected_size = int(self.rsa_key_size or 2048)
+
+			if key_size != expected_size:
+				frappe.throw(
+					_(
+						"Private key length does not match the selected RSA key size. Expected {0} bits, got {1} bits."
+					).format(expected_size, key_size)
+				)
+
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "TLS Certificate Key Validation Error")
+        raise e
 
 	def validate_key_certificate_association(self):
 		context = OpenSSL.SSL.Context(OpenSSL.SSL.TLSv1_METHOD)
