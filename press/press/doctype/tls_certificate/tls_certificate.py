@@ -255,42 +255,42 @@ class TLSCertificate(Document):
 
 	from OpenSSL import crypto
 
-def _get_private_key_object(self):
-    """
-    Load the private key from the PEM file.
-    Returns OpenSSL.crypto.PKey object.
-    """
-    try:
-        # If self.private_key is a file path, read its contents
-        if isinstance(self.private_key, str):
-            with open(self.private_key, "rb") as f:
-                private_key_data = f.read()
-        else:
-            private_key_data = self.private_key
+	def _get_private_key_object(self):
+		"""
+		Load the private key from the PEM file.
+		Returns OpenSSL.crypto.PKey object.
+		"""
+		try:
+			# If self.private_key is a file path, read its contents
+			if isinstance(self.private_key, str):
+				with open(self.private_key, "rb") as f:
+					private_key_data = f.read()
+			else:
+				private_key_data = self.private_key
 
-        return crypto.load_privatekey(crypto.FILETYPE_PEM, private_key_data)
-    except Exception as e:
-        frappe.log_error(frappe.get_traceback(), "TLS Private Key Load Error")
-        raise e
+			return crypto.load_privatekey(crypto.FILETYPE_PEM, private_key_data)
+		except Exception as e:
+			frappe.log_error(frappe.get_traceback(), "TLS Private Key Load Error")
+			raise e
 
 
-def _get_certificate_object(self, cert_path=None):
-    """
-    Load the certificate from PEM file.
-    Returns OpenSSL.crypto.X509 object.
-    """
-    try:
-        path = cert_path or self.certificate
-        if isinstance(path, str):
-            with open(path, "rb") as f:
-                cert_data = f.read()
-        else:
-            cert_data = path
+	def _get_certificate_object(self, cert_path=None):
+		"""
+		Load the certificate from PEM file.
+		Returns OpenSSL.crypto.X509 object.
+		"""
+		try:
+			path = cert_path or self.certificate
+			if isinstance(path, str):
+				with open(path, "rb") as f:
+					cert_data = f.read()
+			else:
+				cert_data = path
 
-        return crypto.load_certificate(crypto.FILETYPE_PEM, cert_data)
-    except Exception as e:
-        frappe.log_error(frappe.get_traceback(), "TLS Certificate Load Error")
-        raise e
+			return crypto.load_certificate(crypto.FILETYPE_PEM, cert_data)
+		except Exception as e:
+			frappe.log_error(frappe.get_traceback(), "TLS Certificate Load Error")
+			raise e
 
 
 	def validate_key_length(self):
