@@ -253,7 +253,7 @@ class TLSCertificate(Document):
 	# 		log_error("Custom TLS Certificate Exception", certificate=self.name)
 	# 		raise e
 
-	from OpenSSL import crypto
+	# from OpenSSL import crypto
 
 	def _get_private_key_object(self):
 		"""
@@ -268,7 +268,7 @@ class TLSCertificate(Document):
 			else:
 				private_key_data = self.private_key
 
-			return crypto.load_privatekey(crypto.FILETYPE_PEM, private_key_data)
+			return OpenSSL.crypto.load_privatekey(OpenSSL.crypto.FILETYPE_PEM, private_key_data)
 		except Exception as e:
 			frappe.log_error(frappe.get_traceback(), "TLS Private Key Load Error")
 			raise e
@@ -287,7 +287,7 @@ class TLSCertificate(Document):
 			else:
 				cert_data = path
 
-			return crypto.load_certificate(crypto.FILETYPE_PEM, cert_data)
+			return OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, cert_data)
 		except Exception as e:
 			frappe.log_error(frappe.get_traceback(), "TLS Certificate Load Error")
 			raise e
