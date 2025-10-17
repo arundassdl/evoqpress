@@ -300,7 +300,7 @@ class TLSCertificate(Document):
 	# 		frappe.throw(
 	# 			f"Private key length does not match the selected RSA key size. Expected {self.rsa_key_size} bits, got {private_key.bits()} bits."
 	# 		)
-	
+
 	def validate_key_length(self):
 		"""Validate RSA key length, skip EC keys."""
 		from OpenSSL import crypto
@@ -327,9 +327,9 @@ class TLSCertificate(Document):
 					).format(expected_size, key_size)
 				)
 
-    except Exception as e:
-        frappe.log_error(frappe.get_traceback(), "TLS Certificate Key Validation Error")
-        raise e
+		except Exception as e:
+			frappe.log_error(frappe.get_traceback(), "TLS Certificate Key Validation Error")
+			raise e
 
 	def validate_key_certificate_association(self):
 		context = OpenSSL.SSL.Context(OpenSSL.SSL.TLSv1_METHOD)
