@@ -255,23 +255,28 @@ class TLSCertificate(Document):
 
 	# from OpenSSL import crypto
 
-	def _get_private_key_object(self):
-		"""
-		Load the private key from the PEM file.
-		Returns OpenSSL.crypto.PKey object.
-		"""
-		try:
-			# If self.private_key is a file path, read its contents
-			if isinstance(self.private_key, str):
-				with open(self.private_key, "rb") as f:
-					private_key_data = f.read()
-			else:
-				private_key_data = self.private_key
+	# def _get_private_key_object(self):
+	# 	"""
+	# 	Load the private key from the PEM file.
+	# 	Returns OpenSSL.crypto.PKey object.
+	# 	"""
+	# 	try:
+	# 		# If self.private_key is a file path, read its contents
+	# 		if isinstance(self.private_key, str):
+	# 			with open(self.private_key, "rb") as f:
+	# 				private_key_data = f.read()
+	# 		else:
+	# 			private_key_data = self.private_key
 
-			return OpenSSL.crypto.load_privatekey(OpenSSL.crypto.FILETYPE_PEM, private_key_data)
-		except Exception as e:
-			frappe.log_error(frappe.get_traceback(), "TLS Private Key Load Error")
-			raise e
+	# 		return OpenSSL.crypto.load_privatekey(OpenSSL.crypto.FILETYPE_PEM, private_key_data)
+	# 	except Exception as e:
+	# 		frappe.log_error(frappe.get_traceback(), "TLS Private Key Load Error")
+	# 		raise e
+
+	def _get_private_key_object(self):
+		with open(self.private_key, "rb") as f:
+			key_data = f.read()
+		return OpenSSL.crypto.load_privatekey(OpenSSL.crypto.FILETYPE_PEM, key_data)
 
 
 	def _get_certificate_object(self, cert_path=None):
