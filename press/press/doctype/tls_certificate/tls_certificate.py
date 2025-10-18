@@ -22,6 +22,7 @@ from press.exceptions import (
 	TLSRetryLimitExceeded,
 )
 from press.overrides import get_permission_query_conditions_for_doctype
+from press.press.doctype.communication_info.communication_info import get_communication_info
 from press.runner import Ansible
 from press.utils import get_current_team, log_error
 
@@ -239,64 +240,19 @@ class TLSCertificate(Document):
 		if not self.full_chain:
 			self.full_chain = f"{self.certificate}\n{self.intermediate_chain}"
 
-	# def _get_private_key_object(self):
-	# 	try:
-	# 		return OpenSSL.crypto.load_privatekey(OpenSSL.crypto.FILETYPE_PEM, self.private_key)
-	# 	except OpenSSL.crypto.Error as e:
-	# 		log_error("TLS Private Key Exception", certificate=self.name)
-	# 		raise e
-
-	# def _get_certificate_object(self):
-	# 	try:
-	# 		return OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, self.full_chain)
-	# 	except OpenSSL.crypto.Error as e:
-	# 		log_error("Custom TLS Certificate Exception", certificate=self.name)
-	# 		raise e
-
-	# from OpenSSL import crypto
-
-	# def _get_private_key_object(self):
-	# 	"""
-	# 	Load the private key from the PEM file.
-	# 	Returns OpenSSL.crypto.PKey object.
-	# 	"""
-	# 	try:
-	# 		# If self.private_key is a file path, read its contents
-	# 		if isinstance(self.private_key, str):
-	# 			with open(self.private_key, "rb") as f:
-	# 				private_key_data = f.read()
-	# 		else:
-	# 			private_key_data = self.private_key
-
-	# 		return OpenSSL.crypto.load_privatekey(OpenSSL.crypto.FILETYPE_PEM, private_key_data)
-	# 	except Exception as e:
-	# 		frappe.log_error(frappe.get_traceback(), "TLS Private Key Load Error")
-	# 		raise e
-
 	def _get_private_key_object(self):
-		with open(self.private_key, "rb") as f:
-			key_data = f.read()
-		return OpenSSL.crypto.load_privatekey(OpenSSL.crypto.FILETYPE_PEM, key_data)
-
-
-	def _get_certificate_object(self, cert_path=None):
-		"""
-		Load the certificate from PEM file.
-		Returns OpenSSL.crypto.X509 object.
-		"""
 		try:
-			path = cert_path or self.certificate
-			if isinstance(path, str):
-				with open(path, "rb") as f:
-					cert_data = f.read()
-			else:
-				cert_data = path
-
-			return OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, cert_data)
-		except Exception as e:
-			frappe.log_error(frappe.get_traceback(), "TLS Certificate Load Error")
+			return OpenSSL.crypto.load_privatekey(OpenSSL.crypto.FILETYPE_PEM, self.private_key)
+		except OpenSSL.crypto.Error as e:
+			log_error("TLS Private Key Exception", certificate=self.name)
 			raise e
 
+	def _get_certificate_object(self):
+		try:
+			return OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, self.full_chain)
+		except OpenSSL.crypto.Error as e:
+			log_error("Custom TLS Certificate Exception", certificate=self.name)
+			raise e
 
 	def validate_key_length(self):
 		private_key = self._get_private_key_object()
@@ -425,10 +381,8 @@ def notify_custom_tls_renewal():
 
 	for certificate in pending:
 		if certificate.team:
-			notify_email = frappe.get_value("Team", certificate.team, "notify_email")
-
 			frappe.sendmail(
-				recipients=notify_email,
+				recipients=get_communication_info("Email", "Site Activity", "Team", certificate.team),
 				subject=f"TLS Certificate Renewal Required: {certificate.name}",
 				message=f"TLS Certificate {certificate.name} is due for renewal on {certificate.expires_on}. Please renew the certificate to avoid service disruption.",
 			)
