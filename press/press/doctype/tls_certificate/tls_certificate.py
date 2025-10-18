@@ -22,7 +22,7 @@ from press.exceptions import (
 	TLSRetryLimitExceeded,
 )
 from press.overrides import get_permission_query_conditions_for_doctype
-from press.press.doctype.communication_info.communication_info import get_communication_info
+# from press.press.doctype.communication_info.communication_info import get_communication_info
 from press.runner import Ansible
 from press.utils import get_current_team, log_error
 
@@ -379,10 +379,19 @@ def notify_custom_tls_renewal():
 
 	pending = query.run(as_dict=True)
 
+	# for certificate in pending:
+	# 	if certificate.team:
+	# 		frappe.sendmail(
+	# 			recipients=get_communication_info("Email", "Site Activity", "Team", certificate.team),
+	# 			subject=f"TLS Certificate Renewal Required: {certificate.name}",
+	# 			message=f"TLS Certificate {certificate.name} is due for renewal on {certificate.expires_on}. Please renew the certificate to avoid service disruption.",
+	# 		)
 	for certificate in pending:
 		if certificate.team:
+			notify_email = frappe.get_value("Team", certificate.team, "notify_email")
+
 			frappe.sendmail(
-				recipients=get_communication_info("Email", "Site Activity", "Team", certificate.team),
+				recipients=notify_email,
 				subject=f"TLS Certificate Renewal Required: {certificate.name}",
 				message=f"TLS Certificate {certificate.name} is due for renewal on {certificate.expires_on}. Please renew the certificate to avoid service disruption.",
 			)
