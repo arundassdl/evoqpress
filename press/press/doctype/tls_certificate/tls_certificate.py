@@ -22,7 +22,6 @@ from press.exceptions import (
 	TLSRetryLimitExceeded,
 )
 from press.overrides import get_permission_query_conditions_for_doctype
-# from press.press.doctype.communication_info.communication_info import get_communication_info
 from press.runner import Ansible
 from press.utils import get_current_team, log_error
 
@@ -32,6 +31,7 @@ if TYPE_CHECKING:
 AUTO_RETRY_LIMIT = 5
 MANUAL_RETRY_LIMIT = 8
 
+from press.press.doctype.tls_certificate.hetzner_dns import HetznerDNS
 
 class TLSCertificate(Document):
 	# begin: auto-generated types
@@ -120,13 +120,18 @@ class TLSCertificate(Document):
 			return
 		try:
 			settings = frappe.get_doc("Press Settings", "Press Settings")
-			ca = LetsEncrypt(settings)
+			ca = LetsEncrypt(settings, tls_certificate_doc=self)
 			(
 				self.certificate,
 				self.full_chain,
 				self.intermediate_chain,
 				self.private_key,
-			) = ca.obtain(domain=self.domain, rsa_key_size=self.rsa_key_size, wildcard=self.wildcard)
+			) = ca.obtain(
+				domain=self.domain,
+				rsa_key_size=self.rsa_key_size,
+				wildcard=self.wildcard,
+				dns_challenge_provider=self.dns_challenge_provider,
+			)
 			self._extract_certificate_details()
 			self.status = "Active"
 			self.retry_count = 0
@@ -240,19 +245,59 @@ class TLSCertificate(Document):
 		if not self.full_chain:
 			self.full_chain = f"{self.certificate}\n{self.intermediate_chain}"
 
+	# def _get_private_key_object(self):
+	# 	try:
+	# 		return OpenSSL.crypto.load_privatekey(OpenSSL.crypto.FILETYPE_PEM, self.private_key)
+	# 	except OpenSSL.crypto.Error as e:
+	# 		log_error("TLS Private Key Exception", certificate=self.name)
+	# 		raise e
+
+	# def _get_certificate_object(self):
+	# 	try:
+	# 		return OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, self.full_chain)
+	# 	except OpenSSL.crypto.Error as e:
+	# 		log_error("Custom TLS Certificate Exception", certificate=self.name)
+	# 		raise e
+
+	from OpenSSL import crypto
+
 	def _get_private_key_object(self):
+		"""
+		Load the private key from the PEM file.
+		Returns OpenSSL.crypto.PKey object.
+		"""
 		try:
-			return OpenSSL.crypto.load_privatekey(OpenSSL.crypto.FILETYPE_PEM, self.private_key)
-		except OpenSSL.crypto.Error as e:
-			log_error("TLS Private Key Exception", certificate=self.name)
+			# If self.private_key is a file path, read its contents
+			if isinstance(self.private_key, str):
+				with open(self.private_key, "rb") as f:
+					private_key_data = f.read()
+			else:
+				private_key_data = self.private_key
+
+			return OpenSSL.crypto.load_privatekey(OpenSSL.crypto.FILETYPE_PEM, private_key_data)
+		except Exception as e:
+			frappe.log_error(frappe.get_traceback(), "TLS Private Key Load Error")
 			raise e
 
-	def _get_certificate_object(self):
+
+	def _get_certificate_object(self, cert_path=None):
+		"""
+		Load the certificate from PEM file.
+		Returns OpenSSL.crypto.X509 object.
+		"""
 		try:
-			return OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, self.full_chain)
-		except OpenSSL.crypto.Error as e:
-			log_error("Custom TLS Certificate Exception", certificate=self.name)
+			path = cert_path or self.certificate
+			if isinstance(path, str):
+				with open(path, "rb") as f:
+					cert_data = f.read()
+			else:
+				cert_data = path
+
+			return OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_PEM, cert_data)
+		except Exception as e:
+			frappe.log_error(frappe.get_traceback(), "TLS Certificate Load Error")
 			raise e
+
 
 	def validate_key_length(self):
 		private_key = self._get_private_key_object()
@@ -379,13 +424,6 @@ def notify_custom_tls_renewal():
 
 	pending = query.run(as_dict=True)
 
-	# for certificate in pending:
-	# 	if certificate.team:
-	# 		frappe.sendmail(
-	# 			recipients=get_communication_info("Email", "Site Activity", "Team", certificate.team),
-	# 			subject=f"TLS Certificate Renewal Required: {certificate.name}",
-	# 			message=f"TLS Certificate {certificate.name} is due for renewal on {certificate.expires_on}. Please renew the certificate to avoid service disruption.",
-	# 		)
 	for certificate in pending:
 		if certificate.team:
 			notify_email = frappe.get_value("Team", certificate.team, "notify_email")
@@ -469,10 +507,11 @@ class BaseCA:
 	def __init__(self, settings):
 		self.settings = settings
 
-	def obtain(self, domain, rsa_key_size=2048, wildcard=False):
+	def obtain(self, domain, rsa_key_size=2048, wildcard=False, dns_challenge_provider=None):
 		self.domain = f"*.{domain}" if wildcard else domain
 		self.rsa_key_size = rsa_key_size
 		self.wildcard = wildcard
+		self.dns_challenge_provider = dns_challenge_provider
 		self._obtain()
 		return self._extract()
 
@@ -490,11 +529,13 @@ class BaseCA:
 
 
 class LetsEncrypt(BaseCA):
-	def __init__(self, settings):
+	def __init__(self, settings, tls_certificate_doc):
 		super().__init__(settings)
 		self.directory = settings.certbot_directory
 		self.webroot_directory = settings.webroot_directory
 		self.eff_registration_email = settings.eff_registration_email
+		self.tls_certificate_doc = tls_certificate_doc
+		self.hetzner_dns_api_token = settings.get_password("hetzner_api_token")
 
 		# Staging CA provides certificates that are signed by an untrusted root CA
 		# Only use to test certificate procurement/installation flows.
@@ -507,6 +548,13 @@ class LetsEncrypt(BaseCA):
 	def _obtain(self):
 		if not os.path.exists(self.directory):
 			os.mkdir(self.directory)
+
+		if self.dns_challenge_provider == "Hetzner":
+			auth_hook_path = self._create_hetzner_auth_hook_script()
+			cleanup_hook_path = self._create_hetzner_cleanup_hook_script()
+			self._run_certbot_with_hooks(self._certbot_command(), auth_hook_path, cleanup_hook_path)
+			return
+
 		if self.wildcard:
 			self._obtain_wildcard()
 		else:
@@ -544,7 +592,9 @@ class LetsEncrypt(BaseCA):
 		self.run(self._certbot_command())
 
 	def _certbot_command(self):
-		if self.wildcard or frappe.conf.developer_mode:
+		if self.dns_challenge_provider == "Hetzner":
+			plugin = "--manual --preferred-challenges dns"
+		elif self.wildcard or frappe.conf.developer_mode:
 			plugin = "--dns-route53"
 		else:
 			plugin = f"--webroot --webroot-path {self.webroot_directory}"
@@ -589,3 +639,89 @@ class LetsEncrypt(BaseCA):
 	@property
 	def private_key_file(self):
 		return os.path.join(self.directory, "live", self.domain, "privkey.pem")
+
+	def _create_hetzner_auth_hook_script(self):
+		hook_script_content = f"""
+import os
+import sys
+import json
+from press.press.doctype.tls_certificate.hetzner_dns import HetznerDNS
+from frappe.utils.encryption import decrypt
+
+try:
+    # Certbot passes environment variables
+    domain = os.environ.get('CERTBOT_DOMAIN')
+    validation = os.environ.get('CERTBOT_VALIDATION')
+    hetzner_api_token = os.environ.get('HETZNER_API_TOKEN')
+    
+    if not all([domain, validation, hetzner_api_token]):
+        raise ValueError("Missing Certbot or Hetzner API token environment variables")
+
+    # Extract the base domain for Hetzner DNS (e.g., example.com from sub.example.com)
+    # This might need refinement based on how Hetzner zones are configured.
+    # For simplicity, we assume the top-level domain from the certificate domain
+    # E.g., for 'sub.example.com', we assume 'example.com' is the Hetzner zone.
+    domain_parts = domain.split('.')
+    base_domain = '.'.join(domain_parts[-2:]) if len(domain_parts) >= 2 else domain
+
+    dns_client = HetznerDNS(api_token=decrypt(hetzner_api_token), domain=base_domain)
+    record_id = dns_client.add_acme_challenge(domain, validation, validation)
+    print(record_id) # Certbot expects the record ID on stdout for cleanup hook
+
+except Exception as e:
+    with open("/tmp/certbot-hetzner-auth-error.log", "a") as f:
+        f.write(f"Auth hook failed: {{e}}
+")
+    sys.exit(1)
+"""
+		hook_script_path = os.path.join(self.directory, "hetzner_auth_hook.py")
+		with open(hook_script_path, "w") as f:
+			f.write(hook_script_content)
+		os.chmod(hook_script_path, 0o755)  # Make the script executable
+		return hook_script_path
+
+	def _create_hetzner_cleanup_hook_script(self):
+		hook_script_content = f"""
+import os
+import sys
+import json
+from press.press.doctype.tls_certificate.hetzner_dns import HetznerDNS
+from frappe.utils.encryption import decrypt
+
+try:
+    domain = os.environ.get('CERTBOT_DOMAIN')
+    record_id = os.environ.get('CERTBOT_AUTH_OUTPUT') # This is the stdout from the auth hook
+    hetzner_api_token = os.environ.get('HETZNER_API_TOKEN')
+
+    if not all([domain, record_id, hetzner_api_token]):
+        raise ValueError("Missing Certbot or Hetzner API token environment variables")
+
+    domain_parts = domain.split('.')
+    base_domain = '.'.join(domain_parts[-2:]) if len(domain_parts) >= 2 else domain
+
+    dns_client = HetznerDNS(api_token=decrypt(hetzner_api_token), domain=base_domain)
+    dns_client.delete_txt_record(record_id)
+
+except Exception as e:
+    with open("/tmp/certbot-hetzner-cleanup-error.log", "a") as f:
+        f.write(f"Cleanup hook failed: {{e}}
+")
+    sys.exit(1)
+"""
+		hook_script_path = os.path.join(self.directory, "hetzner_cleanup_hook.py")
+		with open(hook_script_path, "w") as f:
+			f.write(hook_script_content)
+		os.chmod(hook_script_path, 0o755)  # Make the script executable
+		return hook_script_path
+
+	def _run_certbot_with_hooks(self, command, auth_hook_path, cleanup_hook_path):
+		environment = os.environ.copy()
+		environment["HETZNER_API_TOKEN"] = self.hetzner_dns_api_token # Pass encrypted token to sub-process
+		
+		full_command = f"{command} --manual-auth-hook {auth_hook_path} --manual-cleanup-hook {cleanup_hook_path}"
+		try:
+			self.run(full_command, environment=environment)
+		finally:
+			# Clean up the temporary hook scripts
+			os.remove(auth_hook_path)
+			os.remove(cleanup_hook_path)

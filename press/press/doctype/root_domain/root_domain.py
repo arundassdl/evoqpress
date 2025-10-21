@@ -32,7 +32,7 @@ class RootDomain(Document):
 		aws_secret_access_key: DF.Password | None
 		default_cluster: DF.Link
 		default_proxy_server: DF.Link | None
-		dns_provider: DF.Literal["AWS Route 53", "Generic"]
+		dns_provider: DF.Literal["AWS Route 53", "Generic", "Hetzner"]
 		enabled: DF.Check
 		team: DF.Link | None
 	# end: auto-generated types

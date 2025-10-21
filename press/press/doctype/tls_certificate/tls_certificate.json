@@ -166,6 +166,15 @@
    "label": "Provider",
    "options": "Let's Encrypt\nOther",
    "reqd": 1
+  },
+  {
+   "default": "Route53",
+   "depends_on": "eval: doc.provider === \"Let's Encrypt\"",
+   "fieldname": "dns_challenge_provider",
+   "fieldtype": "Select",
+   "label": "DNS Challenge Provider",
+   "options": "Route53\nHetzner",
+   "reqd": 1
   }
  ],
  "grid_page_length": 50,
