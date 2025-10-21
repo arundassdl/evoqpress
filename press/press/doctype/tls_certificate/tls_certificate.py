@@ -641,12 +641,12 @@ class LetsEncrypt(BaseCA):
 		return os.path.join(self.directory, "live", self.domain, "privkey.pem")
 
 	def _create_hetzner_auth_hook_script(self):
-		hook_script_content = f"""
+		hook_script_content = f"""#!/usr/bin/env python3
 import os
 import sys
 import json
+import time
 from press.press.doctype.tls_certificate.hetzner_dns import HetznerDNS
-from frappe.utils.encryption import decrypt
 
 try:
     # Certbot passes environment variables
@@ -664,8 +664,10 @@ try:
     domain_parts = domain.split('.')
     base_domain = '.'.join(domain_parts[-2:]) if len(domain_parts) >= 2 else domain
 
-    dns_client = HetznerDNS(api_token=decrypt(hetzner_api_token), domain=base_domain)
+    dns_client = HetznerDNS(api_token=hetzner_api_token, domain=base_domain)
     record_id = dns_client.add_acme_challenge(domain, validation, validation)
+    # Give DNS some time to propagate before Certbot checks
+    time.sleep(60)
     print(record_id) # Certbot expects the record ID on stdout for cleanup hook
 
 except Exception as e:
@@ -681,12 +683,11 @@ except Exception as e:
 		return hook_script_path
 
 	def _create_hetzner_cleanup_hook_script(self):
-		hook_script_content = f"""
+		hook_script_content = f"""#!/usr/bin/env python3
 import os
 import sys
 import json
 from press.press.doctype.tls_certificate.hetzner_dns import HetznerDNS
-from frappe.utils.encryption import decrypt
 
 try:
     domain = os.environ.get('CERTBOT_DOMAIN')
@@ -699,7 +700,7 @@ try:
     domain_parts = domain.split('.')
     base_domain = '.'.join(domain_parts[-2:]) if len(domain_parts) >= 2 else domain
 
-    dns_client = HetznerDNS(api_token=decrypt(hetzner_api_token), domain=base_domain)
+    dns_client = HetznerDNS(api_token=hetzner_api_token, domain=base_domain)
     dns_client.delete_txt_record(record_id)
 
 except Exception as e:
@@ -718,7 +719,8 @@ except Exception as e:
 		environment = os.environ.copy()
 		environment["HETZNER_API_TOKEN"] = self.hetzner_dns_api_token # Pass encrypted token to sub-process
 		
-		full_command = f"{command} --manual-auth-hook {auth_hook_path} --manual-cleanup-hook {cleanup_hook_path}"
+		# Execute hooks explicitly with Python to avoid shell treating them as sh scripts
+		full_command = f"{command} --manual-auth-hook /usr/bin/env python3 {auth_hook_path} --manual-cleanup-hook /usr/bin/env python3 {cleanup_hook_path}"
 		try:
 			self.run(full_command, environment=environment)
 		finally:
