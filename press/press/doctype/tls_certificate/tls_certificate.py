@@ -691,10 +691,16 @@ try:
     parts = domain.split(".")
     base_domain = ".".join(parts[-2:]) if len(parts) >= 2 else domain
     zone_id = get_zone_id(token, base_domain)
-    record_name = f"_acme-challenge.{domain}".rstrip(".")
+    # Hetzner expects record 'name' relative to the zone
+    if domain == base_domain:
+        record_name = "_acme-challenge"
+    else:
+        sub = domain[: -(len(base_domain) + 1)]  # remove "." + base_domain
+        record_name = f"_acme-challenge.{sub}".rstrip(".")
     record_id = create_txt_record(token, zone_id, record_name, validation, ttl=120)
 
-    time.sleep(90)
+    wait_s = int(os.environ.get("HETZNER_PROPAGATION_WAIT", "120"))
+    time.sleep(wait_s)
     print(record_id)
 except Exception as e:
     with open("/tmp/certbot-hetzner-auth-error.log", "a") as f:
