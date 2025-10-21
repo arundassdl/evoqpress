@@ -649,33 +649,56 @@ import os
 import sys
 import json
 import time
-from press.press.doctype.tls_certificate.hetzner_dns import HetznerDNS
+import urllib.request
+import urllib.error
+
+BASE_URL = "https://dns.hetzner.com/api/v1"
+
+def _headers(token):
+    return {"Auth-API-Token": token, "Content-Type": "application/json"}
+
+def get_zone_id(token, domain):
+    req = urllib.request.Request(f"{BASE_URL}/zones", headers=_headers(token))
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode())
+    zones = data.get("zones", [])
+    for zone in zones:
+        name = zone.get("name")
+        if name and (domain == name or domain.endswith(name)):
+            return zone.get("id")
+    raise RuntimeError(f"No matching zone found for {domain}")
+
+def create_txt_record(token, zone_id, name, value, ttl=120):
+    payload = json.dumps({
+        "type": "TXT",
+        "name": name,
+        "value": value,
+        "ttl": ttl,
+        "zone_id": zone_id,
+    }).encode()
+    req = urllib.request.Request(f"{BASE_URL}/records", headers=_headers(token), data=payload, method="POST")
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode())
+    return data["record"]["id"]
 
 try:
-    # Certbot passes environment variables
-    domain = os.environ.get('CERTBOT_DOMAIN')
-    validation = os.environ.get('CERTBOT_VALIDATION')
-    hetzner_api_token = os.environ.get('HETZNER_API_TOKEN')
-    
-    if not all([domain, validation, hetzner_api_token]):
-        raise ValueError("Missing Certbot or Hetzner API token environment variables")
+    domain = os.environ.get("CERTBOT_DOMAIN")
+    validation = os.environ.get("CERTBOT_VALIDATION")
+    token = os.environ.get("HETZNER_API_TOKEN")
+    if not all([domain, validation, token]):
+        raise ValueError("Missing required environment variables")
 
-    # Extract the base domain for Hetzner DNS (e.g., example.com from sub.example.com)
-    # This might need refinement based on how Hetzner zones are configured.
-    # For simplicity, we assume the top-level domain from the certificate domain
-    # E.g., for 'sub.example.com', we assume 'example.com' is the Hetzner zone.
-    domain_parts = domain.split('.')
-    base_domain = '.'.join(domain_parts[-2:]) if len(domain_parts) >= 2 else domain
+    parts = domain.split(".")
+    base_domain = ".".join(parts[-2:]) if len(parts) >= 2 else domain
+    zone_id = get_zone_id(token, base_domain)
+    record_name = f"_acme-challenge.{domain}".rstrip(".")
+    record_id = create_txt_record(token, zone_id, record_name, validation, ttl=120)
 
-    dns_client = HetznerDNS(api_token=hetzner_api_token, domain=base_domain)
-    record_id = dns_client.add_acme_challenge(domain, validation, validation)
-    # Give DNS some time to propagate before Certbot checks
-    time.sleep(60)
-    print(record_id) # Certbot expects the record ID on stdout for cleanup hook
-
+    time.sleep(90)
+    print(record_id)
 except Exception as e:
     with open("/tmp/certbot-hetzner-auth-error.log", "a") as f:
-        f.write(f"Auth hook failed: {{e}}\\n")
+        f.write(f"Auth hook failed: {e}\\n")
     sys.exit(1)
 """
 		hook_script_path = os.path.join(self.directory, "hetzner_auth_hook.py")
@@ -689,25 +712,28 @@ except Exception as e:
 import os
 import sys
 import json
-from press.press.doctype.tls_certificate.hetzner_dns import HetznerDNS
+import urllib.request
+import urllib.error
+
+BASE_URL = "https://dns.hetzner.com/api/v1"
+
+def _headers(token):
+    return {"Auth-API-Token": token, "Content-Type": "application/json"}
+
+def delete_record(token, record_id):
+    req = urllib.request.Request(f"{BASE_URL}/records/{record_id}", headers=_headers(token), method="DELETE")
+    with urllib.request.urlopen(req, timeout=30) as _:
+        pass
 
 try:
-    domain = os.environ.get('CERTBOT_DOMAIN')
-    record_id = os.environ.get('CERTBOT_AUTH_OUTPUT') # This is the stdout from the auth hook
-    hetzner_api_token = os.environ.get('HETZNER_API_TOKEN')
-
-    if not all([domain, record_id, hetzner_api_token]):
-        raise ValueError("Missing Certbot or Hetzner API token environment variables")
-
-    domain_parts = domain.split('.')
-    base_domain = '.'.join(domain_parts[-2:]) if len(domain_parts) >= 2 else domain
-
-    dns_client = HetznerDNS(api_token=hetzner_api_token, domain=base_domain)
-    dns_client.delete_txt_record(record_id)
-
+    record_id = os.environ.get("CERTBOT_AUTH_OUTPUT")
+    token = os.environ.get("HETZNER_API_TOKEN")
+    if not all([record_id, token]):
+        raise ValueError("Missing required environment variables")
+    delete_record(token, record_id)
 except Exception as e:
     with open("/tmp/certbot-hetzner-cleanup-error.log", "a") as f:
-        f.write(f"Cleanup hook failed: {{e}}\\n")
+        f.write(f"Cleanup hook failed: {e}\\n")
     sys.exit(1)
 """
 		hook_script_path = os.path.join(self.directory, "hetzner_cleanup_hook.py")
