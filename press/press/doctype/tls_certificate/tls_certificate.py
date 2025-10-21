@@ -644,7 +644,7 @@ class LetsEncrypt(BaseCA):
 		return os.path.join(self.directory, "live", self.domain, "privkey.pem")
 
 	def _create_hetzner_auth_hook_script(self):
-		hook_script_content = f"""#!/usr/bin/env python3
+		hook_script_content = """#!/usr/bin/env python3
 import os
 import sys
 import json
@@ -698,7 +698,7 @@ try:
     print(record_id)
 except Exception as e:
     with open("/tmp/certbot-hetzner-auth-error.log", "a") as f:
-        f.write(f"Auth hook failed: {e}\\n")
+        f.write("Auth hook failed: %s\\n" % e)
     sys.exit(1)
 """
 		hook_script_path = os.path.join(self.directory, "hetzner_auth_hook.py")
@@ -708,7 +708,7 @@ except Exception as e:
 		return hook_script_path
 
 	def _create_hetzner_cleanup_hook_script(self):
-		hook_script_content = f"""#!/usr/bin/env python3
+		hook_script_content = """#!/usr/bin/env python3
 import os
 import sys
 import json
@@ -733,7 +733,7 @@ try:
     delete_record(token, record_id)
 except Exception as e:
     with open("/tmp/certbot-hetzner-cleanup-error.log", "a") as f:
-        f.write(f"Cleanup hook failed: {e}\\n")
+        f.write("Cleanup hook failed: %s\\n" % e)
     sys.exit(1)
 """
 		hook_script_path = os.path.join(self.directory, "hetzner_cleanup_hook.py")
