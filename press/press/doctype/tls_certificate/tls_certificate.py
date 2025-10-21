@@ -552,7 +552,10 @@ class LetsEncrypt(BaseCA):
 		if self.dns_challenge_provider == "Hetzner":
 			auth_hook_path = self._create_hetzner_auth_hook_script()
 			cleanup_hook_path = self._create_hetzner_cleanup_hook_script()
-			self._run_certbot_with_hooks(self._certbot_command(), auth_hook_path, cleanup_hook_path)
+			# Create shell wrappers to force python interpreter
+			auth_wrapper = self._create_shell_wrapper("hetzner_auth_hook.sh", auth_hook_path)
+			cleanup_wrapper = self._create_shell_wrapper("hetzner_cleanup_hook.sh", cleanup_hook_path)
+			self._run_certbot_with_hooks(self._certbot_command(), auth_wrapper, cleanup_wrapper)
 			return
 
 		if self.wildcard:
@@ -715,12 +718,21 @@ except Exception as e:
 		os.chmod(hook_script_path, 0o755)  # Make the script executable
 		return hook_script_path
 
+	def _create_shell_wrapper(self, filename: str, target_script_path: str):
+		wrapper_path = os.path.join(self.directory, filename)
+		wrapper_content = f"""#!/bin/sh
+exec /usr/bin/env python3 {target_script_path}
+"""
+		with open(wrapper_path, "w") as f:
+			f.write(wrapper_content)
+		os.chmod(wrapper_path, 0o755)
+		return wrapper_path
+
 	def _run_certbot_with_hooks(self, command, auth_hook_path, cleanup_hook_path):
 		environment = os.environ.copy()
 		environment["HETZNER_API_TOKEN"] = self.hetzner_dns_api_token # Pass encrypted token to sub-process
 		
-		# Execute hooks explicitly with Python to avoid shell treating them as sh scripts
-		full_command = f"{command} --manual-auth-hook /usr/bin/env python3 {auth_hook_path} --manual-cleanup-hook /usr/bin/env python3 {cleanup_hook_path}"
+		full_command = f"{command} --manual-auth-hook {auth_hook_path} --manual-cleanup-hook {cleanup_hook_path}"
 		try:
 			self.run(full_command, environment=environment)
 		finally:
