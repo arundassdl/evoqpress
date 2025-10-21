@@ -675,8 +675,7 @@ try:
 
 except Exception as e:
     with open("/tmp/certbot-hetzner-auth-error.log", "a") as f:
-        f.write(f"Auth hook failed: {{e}}
-")
+        f.write(f"Auth hook failed: {{e}}\\n")
     sys.exit(1)
 """
 		hook_script_path = os.path.join(self.directory, "hetzner_auth_hook.py")
@@ -708,8 +707,7 @@ try:
 
 except Exception as e:
     with open("/tmp/certbot-hetzner-cleanup-error.log", "a") as f:
-        f.write(f"Cleanup hook failed: {{e}}
-")
+        f.write(f"Cleanup hook failed: {{e}}\\n")
     sys.exit(1)
 """
 		hook_script_path = os.path.join(self.directory, "hetzner_cleanup_hook.py")
