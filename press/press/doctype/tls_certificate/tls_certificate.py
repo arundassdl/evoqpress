@@ -22,6 +22,7 @@ from press.exceptions import (
 	TLSRetryLimitExceeded,
 )
 from press.overrides import get_permission_query_conditions_for_doctype
+from press.press.doctype.communication_info.communication_info import get_communication_info
 from press.runner import Ansible
 from press.utils import get_current_team, log_error
 
