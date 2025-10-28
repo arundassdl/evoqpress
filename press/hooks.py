@@ -67,9 +67,18 @@ update_website_context = ["press.overrides.update_website_context"]
 website_route_rules = [
 	{"from_route": "/dashboard/<path:app_path>", "to_route": "dashboard"},
 ]
+def safe_auth_url():
+    try:
+        import frappe
+        if not getattr(frappe.local, "site", None):
+            return "/"
+        return get_frappe_io_auth_url() or "/"
+    except Exception:
+        return "/"
 
 website_redirects = [
-	{"source": "/dashboard/f-login", "target": get_frappe_io_auth_url() or "/"},
+	# {"source": "/dashboard/f-login", "target": get_frappe_io_auth_url() or "/"},
+	{"source": "/dashboard/f-login", "target": safe_auth_url()},
 	{
 		"source": "/suspended-site",
 		"target": "/api/method/press.api.handle_suspended_site_redirection",
