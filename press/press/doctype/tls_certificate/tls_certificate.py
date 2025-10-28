@@ -429,7 +429,8 @@ def notify_custom_tls_renewal():
 			notify_email = frappe.get_value("Team", certificate.team, "notify_email")
 
 			frappe.sendmail(
-				recipients=notify_email,
+				#recipients=notify_email,
+				recipients=get_communication_info("Email", "Site Activity", "Team", certificate.team),
 				subject=f"TLS Certificate Renewal Required: {certificate.name}",
 				message=f"TLS Certificate {certificate.name} is due for renewal on {certificate.expires_on}. Please renew the certificate to avoid service disruption.",
 			)
@@ -681,6 +682,17 @@ def create_txt_record(token, zone_id, name, value, ttl=120):
         data = json.loads(resp.read().decode())
     return data["record"]["id"]
 
+def list_zone_records(token, zone_id):
+    req = urllib.request.Request(f"{BASE_URL}/records?zone_id={zone_id}", headers=_headers(token))
+    with urllib.request.urlopen(req, timeout=30) as resp:
+        data = json.loads(resp.read().decode())
+    return data.get("records", [])
+
+def delete_record(token, record_id):
+    req = urllib.request.Request(f"{BASE_URL}/records/{record_id}", headers=_headers(token), method="DELETE")
+    with urllib.request.urlopen(req, timeout=30) as _:
+        pass
+
 try:
     domain = os.environ.get("CERTBOT_DOMAIN")
     validation = os.environ.get("CERTBOT_VALIDATION")
@@ -697,9 +709,16 @@ try:
     else:
         sub = domain[: -(len(base_domain) + 1)]  # remove "." + base_domain
         record_name = f"_acme-challenge.{sub}".rstrip(".")
+    # Remove any pre-existing _acme-challenge TXT records for this domain to avoid multiple values
+    for rec in list_zone_records(token, zone_id):
+        if rec.get("type") == "TXT" and rec.get("name") == record_name:
+            try:
+                delete_record(token, rec.get("id"))
+            except Exception:
+                pass
     record_id = create_txt_record(token, zone_id, record_name, validation, ttl=120)
 
-    wait_s = int(os.environ.get("HETZNER_PROPAGATION_WAIT", "120"))
+    wait_s = int(os.environ.get("HETZNER_PROPAGATION_WAIT", "180"))
     time.sleep(wait_s)
     print(record_id)
 except Exception as e:
@@ -749,12 +768,10 @@ except Exception as e:
 		return hook_script_path
 
 	def _create_shell_wrapper(self, filename: str, target_script_path: str):
+		# Deprecated: Not used anymore, kept for backward compatibility if referenced elsewhere
 		wrapper_path = os.path.join(self.directory, filename)
-		wrapper_content = f"""#!/bin/sh
-exec /usr/bin/env python3 {target_script_path}
-"""
 		with open(wrapper_path, "w") as f:
-			f.write(wrapper_content)
+			f.write("#!/bin/sh\nexit 0\n")
 		os.chmod(wrapper_path, 0o755)
 		return wrapper_path
 
@@ -762,7 +779,7 @@ exec /usr/bin/env python3 {target_script_path}
 		environment = os.environ.copy()
 		environment["HETZNER_API_TOKEN"] = self.hetzner_dns_api_token # Pass encrypted token to sub-process
 		
-		full_command = f"{command} --manual-auth-hook {auth_hook_path} --manual-cleanup-hook {cleanup_hook_path}"
+		full_command = f"{command} --manual-auth-hook /usr/bin/python3 {auth_hook_path} --manual-cleanup-hook /usr/bin/python3 {cleanup_hook_path}"
 		try:
 			self.run(full_command, environment=environment)
 		finally:
