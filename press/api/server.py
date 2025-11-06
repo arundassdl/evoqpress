@@ -27,6 +27,10 @@ if TYPE_CHECKING:
 	from press.press.doctype.server.server import Server
 	from press.press.doctype.server_plan.server_plan import ServerPlan
 
+@frappe.whitelist(allow_guest=True)
+def ping():
+    return {"message": "Pong"}
+
 
 def poly_get_doc(doctypes, name):
 	for doctype in doctypes:

@@ -203,29 +203,133 @@ class Ansible:
 
 		return proxy_command
 
+	# def patch(self):
+	# 	def modified_action_module_run(*args, **kwargs):
+	# 		result = self.action_module_run(*args, **kwargs)
+	# 		self.callback.on_async_poll(result)
+	# 		return result
+
+	# 	def modified_poll_async_result(executor, result, templar, task_vars=None):
+	# 		job_id = result["ansible_job_id"]
+	# 		task = executor._task
+	# 		self.callback.on_async_start(task._role.get_name(), task.name, job_id)
+	# 		return self._poll_async_result(executor, result, templar, task_vars=task_vars)
+
+	# 	if ActionModule.run.__module__ != "press.runner":
+	# 		self.action_module_run = ActionModule.run
+	# 		ActionModule.run = modified_action_module_run
+
+	# 	if TaskExecutor.run.__module__ != "press.runner":
+	# 		self._poll_async_result = TaskExecutor._poll_async_result
+	# 		TaskExecutor._poll_async_result = modified_poll_async_result
+
+	# def unpatch(self):
+	# 	TaskExecutor._poll_async_result = self._poll_async_result
+	# 	ActionModule.run = self.action_module_run
 	def patch(self):
-		def modified_action_module_run(*args, **kwargs):
-			result = self.action_module_run(*args, **kwargs)
-			self.callback.on_async_poll(result)
+		"""
+		Save original methods (always set attributes so unpatch won't fail),
+		and replace with our wrappers. Uses attribute names expected by existing
+		unpatch() implementation: self.action_module_run and self._poll_async_result.
+		"""
+		# Always set these attributes (so unpatch can safely reference them)
+		# Do not overwrite if already set by a previous patch on this instance.
+		if not hasattr(self, "action_module_run"):
+			self.action_module_run = getattr(ActionModule, "run", None)
+		if not hasattr(self, "_poll_async_result"):
+			self._poll_async_result = getattr(TaskExecutor, "_poll_async_result", None)
+
+		# If already patched by this module, mark and return
+		if getattr(ActionModule.run, "__module__", None) == "press.runner" and getattr(
+			TaskExecutor._poll_async_result, "__module__", None
+		) == "press.runner":
+			self._patched = True
+			return
+
+		# Define wrappers with correct signatures
+		def modified_action_module_run(action_module_self, *args, **kwargs):
+			# call saved original (bound/unbound handling preserved by passing instance)
+			if self.action_module_run:
+				try:
+					result = self.action_module_run(action_module_self, *args, **kwargs)
+				except Exception as ex:
+					frappe.log_error(f"Original ActionModule.run failed: {ex}", "press.runner.patch")
+					raise
+			else:
+				# If original missing, raise clear error (so behaviour is explicit)
+				raise RuntimeError("Original ActionModule.run not available")
+
+			# Notify callback, but don't let callback errors crash ansible
+			try:
+				self.callback.on_async_poll(result)
+			except Exception as cb_ex:
+				frappe.log_error(f"callback.on_async_poll failed: {cb_ex}", "press.runner.patch")
+
 			return result
 
 		def modified_poll_async_result(executor, result, templar, task_vars=None):
-			job_id = result["ansible_job_id"]
-			task = executor._task
-			self.callback.on_async_start(task._role.get_name(), task.name, job_id)
-			return self._poll_async_result(executor, result, templar, task_vars=task_vars)
+			# Try to get job id safely
+			try:
+				job_id = result.get("ansible_job_id") if isinstance(result, dict) else result["ansible_job_id"]
+			except Exception:
+				job_id = None
 
-		if ActionModule.run.__module__ != "press.runner":
-			self.action_module_run = ActionModule.run
+			# Try to introspect task and notify callback
+			try:
+				task = getattr(executor, "_task", None)
+				if task:
+					try:
+						self.callback.on_async_start(task._role.get_name(), task.name, job_id)
+					except Exception as cb_ex:
+						frappe.log_error(f"callback.on_async_start failed: {cb_ex}", "press.runner.patch")
+			except Exception:
+				frappe.log_error("Failed to introspect executor._task in modified_poll_async_result", "press.runner.patch")
+
+			# Call original poll method
+			if self._poll_async_result:
+				try:
+					return self._poll_async_result(executor, result, templar, task_vars=task_vars)
+				except Exception as ex:
+					frappe.log_error(f"Original TaskExecutor._poll_async_result failed: {ex}", "press.runner.patch")
+					raise
+			else:
+				raise RuntimeError("Original TaskExecutor._poll_async_result not available")
+
+		# Replace on the classes only if not already replaced by this module
+		if getattr(ActionModule.run, "__module__", None) != "press.runner":
 			ActionModule.run = modified_action_module_run
 
-		if TaskExecutor.run.__module__ != "press.runner":
-			self._poll_async_result = TaskExecutor._poll_async_result
+		if getattr(TaskExecutor._poll_async_result, "__module__", None) != "press.runner":
 			TaskExecutor._poll_async_result = modified_poll_async_result
 
+		self._patched = True
+
+
 	def unpatch(self):
-		TaskExecutor._poll_async_result = self._poll_async_result
-		ActionModule.run = self.action_module_run
+		"""
+		Restore original methods only if we saved them.
+		This uses self.action_module_run and self._poll_async_result (always set by patch()).
+		Safe to call multiple times.
+		"""
+		if not getattr(self, "_patched", False):
+			return
+
+		# Restore ActionModule.run
+		try:
+			if hasattr(self, "action_module_run") and self.action_module_run is not None:
+				ActionModule.run = self.action_module_run
+		except Exception as ex:
+			frappe.log_error(f"Failed to restore ActionModule.run: {ex}", "press.runner.unpatch")
+
+		# Restore TaskExecutor._poll_async_result
+		try:
+			if hasattr(self, "_poll_async_result") and self._poll_async_result is not None:
+				TaskExecutor._poll_async_result = self._poll_async_result
+		except Exception as ex:
+			frappe.log_error(f"Failed to restore TaskExecutor._poll_async_result: {ex}", "press.runner.unpatch")
+
+		self._patched = False
+
 
 	def run(self) -> AnsiblePlay:
 		self.executor = PlaybookExecutor(
