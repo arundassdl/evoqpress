@@ -226,6 +226,7 @@ class Ansible:
 	# def unpatch(self):
 	# 	TaskExecutor._poll_async_result = self._poll_async_result
 	# 	ActionModule.run = self.action_module_run
+	
 	def patch(self):
 		"""
 		Save original methods (always set attributes so unpatch won't fail),
