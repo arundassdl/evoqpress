@@ -41,6 +41,7 @@ if typing.TYPE_CHECKING:
 	from press.infrastructure.doctype.arm_build_record.arm_build_record import ARMBuildRecord
 	from press.press.doctype.agent_job.agent_job import AgentJob
 	from press.press.doctype.ansible_play.ansible_play import AnsiblePlay
+	from press.press.doctype.auto_scale_record.auto_scale_record import AutoScaleRecord
 	from press.press.doctype.bench.bench import Bench
 	from press.press.doctype.cluster.cluster import Cluster
 	from press.press.doctype.database_server.database_server import DatabaseServer
@@ -1010,6 +1011,25 @@ class BaseServer(Document, TagHelpers):
 
 	@frappe.whitelist()
 	def archive(self):
+		if frappe.db.exists(
+			"Press Job",
+			{
+				"job_type": "Archive Server",
+				"server": self.name,
+				"server_type": self.doctype,
+				"status": "Success",
+			},
+		):
+			frappe.msgprint(_("Server {0} has already been archived.").format(self.name))
+			return
+
+		if self.virtual_machine:
+			vm_status = frappe.db.get_value("Virtual Machine", self.virtual_machine, "status")
+			if vm_status == "Terminated":
+				self.status = "Archived"
+				self.save()
+				return
+
 		if frappe.get_all(
 			"Site",
 			filters={"server": self.name, "status": ("!=", "Archived")},
@@ -1026,6 +1046,7 @@ class BaseServer(Document, TagHelpers):
 			frappe.throw(
 				_("Cannot archive server with benches. Please drop them from their respective dashboards.")
 			)
+
 		self.status = "Pending"
 		self.save()
 		if self.is_self_hosted:
@@ -2138,6 +2159,7 @@ class Server(BaseServer):
 	if TYPE_CHECKING:
 		from frappe.types import DF
 
+		from press.press.doctype.auto_scale_trigger.auto_scale_trigger import AutoScaleTrigger
 		from press.press.doctype.communication_info.communication_info import CommunicationInfo
 		from press.press.doctype.resource_tag.resource_tag import ResourceTag
 		from press.press.doctype.server_mount.server_mount import ServerMount
@@ -2146,7 +2168,7 @@ class Server(BaseServer):
 		auto_add_storage_max: DF.Int
 		auto_add_storage_min: DF.Int
 		auto_increase_storage: DF.Check
-		auto_scaled: DF.Check
+		auto_scale_trigger: DF.Table[AutoScaleTrigger]
 		bastion_server: DF.Link | None
 		benches_on_shared_volume: DF.Check
 		cluster: DF.Link | None
@@ -2194,6 +2216,7 @@ class Server(BaseServer):
 		public: DF.Check
 		ram: DF.Float
 		root_public_key: DF.Code | None
+		scaled_up: DF.Check
 		secondary_server: DF.Link | None
 		self_hosted_mariadb_root_password: DF.Password | None
 		self_hosted_mariadb_server: DF.Data | None
@@ -2998,6 +3021,46 @@ class Server(BaseServer):
 		if doc.app_server != self.name:
 			frappe.throw("Snapshot does not belong to this server")
 		doc.unlock()
+
+	@frappe.whitelist()
+	def scale_up(self):
+		if not self.can_scale:
+			frappe.throw("Server is not configured for auto scaling", frappe.ValidationError)
+
+		auto_scale_record = self._create_auto_scale_record(scale_up=True)
+		auto_scale_record.insert()
+
+	@frappe.whitelist()
+	def scale_down(self):
+		if not self.can_scale:
+			frappe.throw("Server is not configured for auto scaling", frappe.ValidationError)
+
+		auto_scale_record = self._create_auto_scale_record(scale_up=False)
+		auto_scale_record.insert()
+
+	@property
+	def can_scale(self) -> bool:
+		"""
+		Check if server is configured for auto scaling
+		and all release groups on this server have a password
+		"""
+		has_release_groups_without_redis_password = bool(
+			frappe.db.get_all(
+				"Release Group", {"server": self.name, "enabled": 1, "redis_password": ("LIKE", "")}
+			)
+		)
+		return self.benches_on_shared_volume and not has_release_groups_without_redis_password
+
+	def _create_auto_scale_record(self, scale_up: bool) -> "AutoScaleRecord":
+		"""Create up/down scale record"""
+		return frappe.get_doc(
+			{
+				"doctype": "Auto Scale Record",
+				"scale_up": scale_up,
+				"scale_down": not scale_up,
+				"primary_server": self.name,
+			}
+		)
 
 	@property
 	def domains(self):
