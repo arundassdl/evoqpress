@@ -162,7 +162,7 @@ class Ansible:
 		self.server = server
 		self.playbook = playbook
 		self.playbook_path = frappe.get_app_path("press", "playbooks", self.playbook)
-		self.host = f"{server.ip}:{port}"
+		self.host = server.ip  # Fixed: removed port from inventory
 		self.variables = variables or {}
 
 		constants.HOST_KEY_CHECKING = False

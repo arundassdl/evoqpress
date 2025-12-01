@@ -13,7 +13,7 @@
       - htop
       - libcrypto++-dev
       - libssl-dev
-      - ntp
+     #- ntp
       - python3-dev
       - python3-pip
       - virtualenv

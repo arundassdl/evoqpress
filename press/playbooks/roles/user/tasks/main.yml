@@ -6,8 +6,9 @@
     password_lock: yes
     shell: /bin/bash
     append: no
-    uid: 1000
+    uid: 1001
     generate_ssh_key: yes
+  when: false
 
 - name: Allow Passwordless sudo Access to Frappe User
   copy:

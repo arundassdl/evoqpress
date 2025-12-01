@@ -1,5 +1,4 @@
 ######################## Filebeat Configuration ############################
-
 # ========================== Filebeat global options ===========================
 
 filebeat.config:

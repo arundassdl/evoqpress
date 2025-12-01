@@ -494,4 +494,11 @@ persistent_cache_keys = [
 ]
 
 before_migrate = ["press.overrides.before_after_migrate"]
-after_migrate = ["press.overrides.before_after_migrate"]
+#after_migrate = ["press.overrides.before_after_migrate"]
+after_migrate = ["press.overrides.before_after_migrate", "press.press.doctype.server.server_custom.apply_server_patch"]
+# Also apply on startup
+boot_session = [
+    "press.press.doctype.server.server_custom.apply_server_patch"
+]
+# Custom Server Setup Patch
+after_app_install = "press.press.doctype.server.server_custom.apply_server_patch"
