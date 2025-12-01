@@ -932,7 +932,8 @@ def validate_subdomain(subdomain: str):
 		frappe.throw("Subdomain contains invalid characters. Use lowercase characters, numbers and hyphens")
 	if len(subdomain) > 32:
 		frappe.throw("Subdomain too long. Use 32 or less characters")
-	if len(subdomain) < 5:
+	# if len(subdomain) < 5:
+	if len(subdomain) < 3:
 		frappe.throw("Subdomain too short. Use 5 or more characters")
 
 

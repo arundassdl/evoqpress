@@ -311,7 +311,8 @@ def select_team(session):
 
 
 def is_valid_subdomain(subdomain):
-	if len(subdomain) < 5:
+	# if len(subdomain) < 5:
+	if len(subdomain) < 3:
 		print("Subdomain too short. Use 5 or more characters")
 		return False
 	matched = re.match("^[a-z0-9][a-z0-9-]*[a-z0-9]$", subdomain)
