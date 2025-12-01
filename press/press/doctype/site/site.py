@@ -852,7 +852,34 @@ class Site(Document, TagHelpers):
 		# log activity
 		log_site_activity(self.name, "Create")
 		self._create_default_site_domain()
-		create_dns_record(self, record_name=self._get_site_name(self.subdomain))
+		
+		domain = frappe.get_doc("Root Domain", self.domain)
+    
+		# Check DNS provider
+		if domain.dns_provider == "Hetzner":
+			# Use Hetzner DNS
+			from press.utils.hetzner_dns import create_hetzner_dns_record
+			
+			# Get proxy server IP
+			proxy_server = frappe.get_doc("Proxy Server", self.server)
+			proxy_ip = proxy_server.ip  # Adjust field name as needed
+			
+			create_hetzner_dns_record(self, proxy_ip)
+		elif domain.get_password("aws_secret_access_key", raise_exception=False):
+			# Use AWS Route53
+			from press.utils.dns import create_dns_record
+			create_dns_record(self, record_name=self._get_site_name(self.subdomain))
+		else:
+			# No DNS provider configured
+			self.add_comment(
+				"Comment",
+				"DNS record needs to be created manually - no DNS provider configured"
+			)
+			frappe.msgprint(
+				f"Site created but DNS record not created automatically. "
+				f"Please create manually: {self.name} → Proxy Server"
+			)
+
 		self.create_agent_request()
 
 		if hasattr(self, "share_details_consent") and self.share_details_consent:
