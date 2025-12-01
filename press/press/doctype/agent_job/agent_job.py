@@ -35,6 +35,9 @@ from press.press.doctype.site_migration.site_migration import (
 from press.utils import log_error, timer
 
 AGENT_LOG_KEY = "agent-jobs"
+AGENT_JOB_TIMEOUT_HOURS = 4
+
+BYPASS_AGENT_JOB_HALT = ["Change Bench Directory"]
 
 
 class AgentJob(Document):
@@ -163,7 +166,7 @@ class AgentJob(Document):
 	def create_http_request(self):
 		try:
 			agent = Agent(self.server, server_type=self.server_type)
-			if agent.should_skip_requests():
+			if agent.should_skip_requests() and self.job_type not in BYPASS_AGENT_JOB_HALT:
 				self.retry_count = 0
 				self.set_status_and_next_retry_at()
 				return
@@ -343,6 +346,25 @@ class AgentJob(Document):
 				"play": "Update Agent",
 				"server": self.server,
 				"creation": (">", frappe.utils.add_to_date(None, minutes=-15)),
+			},
+		):
+			return True
+		return False
+
+	@property
+	def failed_because_of_incident(self) -> bool:
+		if self.server and frappe.db.exists(
+			"Incident",
+			{
+				"server": self.server,
+				"status": ("in", ["Auto-Resolved", "Resolved", "Press-Resolved"]),
+				"creation": (
+					"between",
+					[
+						frappe.utils.add_to_date(self.creation, minutes=-15),
+						self.creation,
+					],
+				),  # incident didn't happen because of job
 			},
 		):
 			return True
@@ -640,7 +662,7 @@ def fail_old_jobs():
 	update_status(delivery_failed_jobs, "Delivery Failure")
 
 
-def get_pair_jobs() -> tuple[str]:
+def get_pair_jobs():
 	"""Return list of jobs who's callback depend on another"""
 	return (
 		"New Site",

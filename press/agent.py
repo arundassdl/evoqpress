@@ -8,7 +8,7 @@ import os
 import re
 from contextlib import suppress
 from datetime import date
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import frappe
 import frappe.utils
@@ -191,7 +191,7 @@ class Agent:
 		)
 
 	def rename_site(self, site, new_name: str, create_user: dict | None = None, config: dict | None = None):
-		data = {"new_name": new_name}
+		data: dict[str, Any] = {"new_name": new_name}
 		if create_user:
 			data["create_user"] = create_user
 		if config:
@@ -636,6 +636,21 @@ class Agent:
 		data = {"name": private_ip}
 		return self.create_agent_job("Rename Upstream", f"proxy/upstreams/{ip}/rename", data, upstream=server)
 
+	def proxy_add_auto_scale_site_to_upstream(
+		self, primary_upstream: str, secondary_upstreams: list[dict[str, int]]
+	) -> "AgentJob":
+		return self.create_agent_job(
+			"Add Auto Scale Site to Upstream",
+			f"proxy/upstreams/{primary_upstream}/auto-scale-site",
+			data={"secondary_upstreams": secondary_upstreams},
+		)
+
+	def proxy_remove_auto_scale_site_to_upstream(self, primary_upstream: str) -> "AgentJob":
+		return self.create_agent_job(
+			"Remove Auto Scale Site from Upstream",
+			f"proxy/upstreams/{primary_upstream}/remove-auto-scale-site",
+		)
+
 	def new_upstream_file(self, server, site=None, code_server=None):
 		_server = frappe.get_doc("Server", server)
 		ip = _server.ip if _server.is_self_hosted else _server.private_ip
@@ -1017,7 +1032,7 @@ Response: {reason or getattr(result, "text", "Unknown")}
 		self,
 		job_type,
 		path,
-		data=None,
+		data: dict | None = None,
 		files=None,
 		method="POST",
 		bench=None,
@@ -1038,12 +1053,12 @@ Response: {reason or getattr(result, "text", "Unknown")}
 		)
 
 		if not disable_agent_job_deduplication:
-			job = self.get_similar_in_execution_job(
+			existing_job = self.get_similar_in_execution_job(
 				job_type, path, bench, site, code_server, upstream, host, method
 			)
 
-			if job:
-				return job
+			if existing_job:
+				return existing_job
 
 		job: "AgentJob" = frappe.get_doc(
 			{
@@ -1093,7 +1108,7 @@ Response: {reason or getattr(result, "text", "Unknown")}
 			filters["bench"] = bench
 
 		if site:
-			filters["site"] = site
+			filters["site"] = site if not isinstance(site, list) else ("IN", site)
 
 		if code_server:
 			filters["code_server"] = code_server
@@ -1104,7 +1119,7 @@ Response: {reason or getattr(result, "text", "Unknown")}
 		if host:
 			filters["host"] = host
 
-		job = frappe.db.get_value("Agent Job", filters, "name")
+		job = frappe.db.get_value("Agent Job", filters, "name", debug=1)
 
 		return frappe.get_doc("Agent Job", job) if job else False
 
@@ -1375,6 +1390,23 @@ Response: {reason or getattr(result, "text", "Unknown")}
 			},
 		)
 
+	def update_database_schema_sizes(self):
+		if self.server_type != "Database Server":
+			return NotImplementedError("This method is only supported for Database Server")
+
+		return self.create_agent_job(
+			"Update Database Schema Sizes",
+			"database/update-schema-sizes",
+			data={
+				"private_ip": frappe.get_value("Database Server", self.server, "private_ip"),
+				"mariadb_root_password": get_decrypted_password(
+					"Database Server", self.server, "mariadb_root_password"
+				),
+			},
+			reference_doctype=self.server_type,
+			reference_name=self.server,
+		)
+
 	def fetch_database_variables(self):
 		if self.server_type != "Database Server":
 			return NotImplementedError("Only Database Server supports this method")
@@ -1591,14 +1623,14 @@ Response: {reason or getattr(result, "text", "Unknown")}
 	):
 		from press.press.doctype.site_backup.site_backup import get_backup_bucket
 
-		database_server: DatabaseServer = frappe.get_doc("Database Server", database_server)
+		database_server_doc: DatabaseServer = frappe.get_doc("Database Server", database_server)  # type: ignore
 		data = {
 			"site": site,
 			"database_name": database_name,
 			"database_ip": frappe.get_value(
-				"Virtual Machine", database_server.virtual_machine, "private_ip_address"
+				"Virtual Machine", database_server_doc.virtual_machine, "private_ip_address"
 			),
-			"mariadb_root_password": database_server.get_password("mariadb_root_password"),
+			"mariadb_root_password": database_server_doc.get_password("mariadb_root_password"),
 		}
 
 		# offsite config
@@ -1634,7 +1666,7 @@ Response: {reason or getattr(result, "text", "Unknown")}
 	):
 		from press.press.doctype.site_backup.site_backup import get_backup_bucket
 
-		data = {
+		data: dict[str, Any] = {
 			"site": site,
 			"bench": bench,
 		}
@@ -1703,9 +1735,7 @@ Response: {reason or getattr(result, "text", "Unknown")}
 
 	def add_servers_to_acl(
 		self,
-		primary_server_private_ip: str,
 		secondary_server_private_ip: str,
-		shared_directory: str,
 		reference_doctype: str | None = None,
 		reference_name: str | None = None,
 	) -> AgentJob:
@@ -1713,9 +1743,7 @@ Response: {reason or getattr(result, "text", "Unknown")}
 			"Add Servers to ACL",
 			"/nfs/add-to-acl",
 			data={
-				"primary_server_private_ip": primary_server_private_ip,
 				"secondary_server_private_ip": secondary_server_private_ip,
-				"shared_directory": shared_directory,
 			},
 			reference_doctype=reference_doctype,
 			reference_name=reference_name,
@@ -1723,9 +1751,7 @@ Response: {reason or getattr(result, "text", "Unknown")}
 
 	def remove_servers_from_acl(
 		self,
-		primary_server_private_ip: str,
 		secondary_server_private_ip: str,
-		shared_directory: str,
 		reference_doctype: str | None = None,
 		reference_name: str | None = None,
 	) -> AgentJob:
@@ -1733,9 +1759,7 @@ Response: {reason or getattr(result, "text", "Unknown")}
 			"Remove Servers from ACL",
 			"/nfs/remove-from-acl",
 			data={
-				"primary_server_private_ip": primary_server_private_ip,
 				"secondary_server_private_ip": secondary_server_private_ip,
-				"shared_directory": shared_directory,
 			},
 			reference_doctype=reference_doctype,
 			reference_name=reference_name,

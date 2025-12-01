@@ -22,6 +22,7 @@ from press.press.doctype.team.team import get_child_team_members
 from press.utils import get_current_team
 
 if TYPE_CHECKING:
+	from press.press.doctype.auto_scale_record.auto_scale_record import AutoScaleRecord
 	from press.press.doctype.cluster.cluster import Cluster
 	from press.press.doctype.database_server.database_server import DatabaseServer
 	from press.press.doctype.server.server import Server
@@ -50,11 +51,11 @@ def get_mount_point(server: str, server_type=None) -> str:
 	elif server_type == "Replication Server":
 		server_type = "Database Server"
 
-	server: Server | DatabaseServer = frappe.get_doc(server_type, server)
-	if server.provider != "AWS EC2":
+	server_doc: "Server" | "DatabaseServer" = frappe.get_doc(server_type, server)
+	if server_doc.provider != "AWS EC2":
 		return "/"
 
-	return server.guess_data_disk_mountpoint()
+	return server_doc.guess_data_disk_mountpoint()
 
 
 @frappe.whitelist()
@@ -524,7 +525,13 @@ def options():
 
 
 @frappe.whitelist()
-def plans(name, cluster=None, platform=None):
+def plans(
+	name,
+	cluster=None,
+	platform=None,
+	show_secondary_application_server_plans: bool = False,
+	current_plan: str | None = None,
+):
 	# Removed default platform of x86_64;
 	# Still use x86_64 for new database servers
 	filters = {"server_type": name}
@@ -534,6 +541,10 @@ def plans(name, cluster=None, platform=None):
 
 	if platform:
 		filters.update({"platform": platform})
+
+	if show_secondary_application_server_plans and current_plan:
+		current_price = frappe.db.get_value("Server Plan", current_plan, "price_inr")
+		filters.update({"price_inr": (">", current_price)})  # Hoping this covers memory and vcpus
 
 	return Plan.get_plans(
 		doctype="Server Plan",
@@ -667,3 +678,76 @@ def get_timespan_timegrain(duration: str) -> tuple[int, int]:
 	}[duration]
 
 	return timespan, timegrain
+
+
+@frappe.whitelist(allow_guest=True)
+def benches_are_idle(server: str, access_token: str) -> None:
+	"""Shut down the secondary server if all benches are idle.
+
+	This function is only triggered by secondary servers:
+	https://github.com/frappe/agent/pull/346/files#diff-7355d9c50cadfa3f4c74fc77a4ad8ab08e4da8f6c3326bbf9b0de0f00a0aa0daR87-R93
+	"""
+	from passlib.hash import pbkdf2_sha256 as pbkdf2
+
+	server_doc = frappe.get_cached_doc("Server", server)
+	agent_password = server_doc.get_password("agent_password")
+	current_user = frappe.session.user
+
+	if not pbkdf2.verify(agent_password, access_token):
+		return
+
+	primary_server, is_server_scaled_up = frappe.db.get_value(
+		"Server", {"secondary_server": server}, ["name", "scaled_up"]
+	)
+	running_scale_down = frappe.db.get_value(
+		"Auto Scale Record", {"secondary_server": server, "status": ("IN", ("Running", "Pending"))}
+	)
+	scaled_up_at = frappe.db.get_value(
+		"Auto Scale Record", {"secondary_server": server, "scale_up": True}, "modified"
+	)
+	cool_off_period = frappe.db.get_single_value("Press Settings", "cool_off_period")
+
+	should_scale_down = (
+		not running_scale_down
+		and is_server_scaled_up
+		and scaled_up_at
+		and (frappe.utils.now_datetime() - scaled_up_at) > timedelta(seconds=cool_off_period or 300)
+	)
+	if should_scale_down:
+		# Scale down here
+		frappe.set_user("Administrator")
+		auto_scale_record: "AutoScaleRecord" = frappe.get_doc(
+			{
+				"doctype": "Auto Scale Record",
+				"scale_up": False,
+				"scale_down": True,
+				"primary_server": primary_server,
+			}
+		)
+		auto_scale_record.insert()
+		frappe.set_user(current_user)
+
+
+@frappe.whitelist()
+@protected(["Server"])
+def schedule_auto_scale(name, scheduled_scale_up_time: str, scheduled_scale_down_time: str) -> None:
+	"""Schedule two auto scale record with scale up and down actions at given times"""
+	secondary_server = frappe.db.get_value("Server", name, "secondary_server")
+	formatted_scheduled_scale_up_time = datetime.strptime(scheduled_scale_up_time, "%Y-%m-%d %H:%M:%S")
+	formatted_scheduled_scale_down_time = datetime.strptime(scheduled_scale_down_time, "%Y-%m-%d %H:%M:%S")
+
+	def create_record(action: str, scheduled_time: datetime) -> None:
+		doc = frappe.get_doc(
+			{
+				"doctype": "Auto Scale Record",
+				"action": action,
+				"status": "Scheduled",
+				"scheduled": scheduled_time,
+				"primary_server": name,
+				"secondary_server": secondary_server,
+			}
+		)
+		doc.insert()
+
+	create_record("Scale Up", formatted_scheduled_scale_up_time)
+	create_record("Scale Down", formatted_scheduled_scale_down_time)
