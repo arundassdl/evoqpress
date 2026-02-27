@@ -1,7 +1,6 @@
 import { defineAsyncComponent, h } from 'vue';
 import { toast } from 'vue-sonner';
 import LucideAppWindow from '~icons/lucide/app-window';
-import LucideVenetianMask from '~icons/lucide/venetian-mask';
 import ServerActions from '../components/server/ServerActions.vue';
 import { getTeam } from '../data/team';
 import router from '../router';
@@ -33,6 +32,8 @@ export default {
 		teardownSecondaryServer: 'teardown_secondary_server',
 		scaleUp: 'scale_up',
 		scaleDown: 'scale_down',
+		addAutomatedScalingTriggers: 'add_automated_scaling_triggers',
+		removeAutomatedScalingTriggers: 'remove_automated_scaling_triggers',
 	},
 	list: {
 		route: '/servers',
@@ -45,6 +46,7 @@ export default {
 			'plan.price_inr as price_inr',
 			'cluster.image as cluster_image',
 			'cluster.title as cluster_title',
+			'is_unified_server',
 		],
 		searchField: 'title',
 		filterControls() {
@@ -96,8 +98,8 @@ export default {
 			{
 				label: 'Database Server Plan',
 				fieldname: 'db_plan',
-				format(value) {
-					if (!value) return '';
+				format(value, row) {
+					if (!value || row.is_unified_server) return '';
 					return planTitle(value);
 				},
 			},
@@ -173,7 +175,9 @@ export default {
 					label: 'Impersonate Server Owner',
 					title: 'Impersonate Server Owner', // for label to pop-up on hover
 					slots: {
-						icon: icon(LucideVenetianMask),
+						icon: defineAsyncComponent(
+							() => import('~icons/lucide/venetian-mask'),
+						),
 					},
 					condition: () =>
 						$team.doc?.is_desk_user && server.doc.team !== $team.name,
@@ -277,7 +281,7 @@ export default {
 				},
 			},
 			{
-				label: 'Bench Group Analytics',
+				label: 'Bench Analytics',
 				icon: icon('bar-chart-2'),
 				condition: (server) => server.doc?.status !== 'Archived',
 				route: 'bench-group-analytics',
@@ -287,6 +291,25 @@ export default {
 				),
 				props: (server) => {
 					return { serverName: server.doc.name };
+				},
+			},
+			{
+				label: 'Firewall',
+				icon: icon('shield'),
+				condition: (server) => {
+					return (
+						server.doc?.status !== 'Archived' && !server.doc?.is_self_hosted
+					);
+				},
+				route: 'firewall',
+				type: 'Component',
+				component: defineAsyncComponent(
+					() => import('../components/server/ServerFirewall.vue'),
+				),
+				props: (server) => {
+					return {
+						id: server.doc.name,
+					};
 				},
 			},
 			{
@@ -335,7 +358,7 @@ export default {
 							},
 							{
 								type: 'link',
-								label: 'Bench Group',
+								label: 'Benches',
 								fieldname: 'group',
 								options: {
 									doctype: 'Release Group',
@@ -386,7 +409,7 @@ export default {
 							},
 						},
 						{
-							label: 'Bench Group',
+							label: 'Bench',
 							fieldname: 'group_title',
 							width: '15rem',
 						},
@@ -396,10 +419,25 @@ export default {
 							width: 0.5,
 						},
 					],
+					primaryAction({ documentResource: server }) {
+						if (server?.doc?.status !== 'Active') return {};
+						return {
+							label: 'New Site',
+							slots: {
+								prefix: icon('plus'),
+							},
+							onClick() {
+								router.push({
+									name: 'Server New Site',
+									params: { server: server.doc.name },
+								});
+							},
+						};
+					},
 				},
 			},
 			{
-				label: 'Bench Groups',
+				label: 'Benches',
 				icon: icon('package'),
 				condition: (server) => {
 					return server.doc?.status !== 'Archived';
@@ -473,8 +511,9 @@ export default {
 						};
 					},
 					primaryAction({ listResource: benches, documentResource: server }) {
+						if (server?.doc?.status !== 'Active') return {};
 						return {
-							label: 'New Bench Group',
+							label: 'New Bench',
 							slots: {
 								prefix: icon('plus'),
 							},
@@ -643,9 +682,7 @@ export default {
 									h(
 										defineAsyncComponent(
 											() =>
-												import(
-													'../components/server/ServerNewSnapshotDialog.vue'
-												),
+												import('../components/server/ServerNewSnapshotDialog.vue'),
 										),
 										{
 											server: server.name,
@@ -665,9 +702,7 @@ export default {
 								onClick() {
 									let ServerSnapshotDetailsDialog = defineAsyncComponent(
 										() =>
-											import(
-												'../components/server/ServerSnapshotDetailsDialog.vue'
-											),
+											import('../components/server/ServerSnapshotDetailsDialog.vue'),
 									);
 									renderDialog(
 										h(ServerSnapshotDetailsDialog, {
@@ -682,9 +717,7 @@ export default {
 								onClick() {
 									let ServerSnapshotRecoverSitesDialog = defineAsyncComponent(
 										() =>
-											import(
-												'../components/server/ServerSnapshotRecoverSitesDialog.vue'
-											),
+											import('../components/server/ServerSnapshotRecoverSitesDialog.vue'),
 									);
 									renderDialog(
 										h(ServerSnapshotRecoverSitesDialog, {
@@ -907,122 +940,35 @@ export default {
 			{
 				label: 'Auto Scale',
 				icon: icon('maximize-2'),
+				route: 'auto-scale',
+				type: 'Component',
 				condition: (server) => {
 					if (!server?.doc) return true;
 					return server?.doc?.secondary_server;
 				},
-				route: 'auto-scale',
-				type: 'list',
-				list: {
-					doctype: 'Auto Scale Record',
-					filters: (server) => {
-						return {
-							primary_server: server.doc?.name,
-							secondary_server: server.doc?.secondary_server,
-						};
+				redirectTo: 'Triggered',
+				childrenRoutes: ['Triggered', 'Scheduled'],
+				nestedChildrenRoutes: [
+					{
+						name: 'Triggered',
+						path: 'triggered',
+						component: () =>
+							import('../components/server/AutoScaleTriggered.vue'),
 					},
-					filterControls() {
-						return [
-							{
-								type: 'select',
-								label: 'Status',
-								fieldname: 'status',
-								options: ['', 'Running', 'Pending', 'Failure', 'Success'],
-							},
-							{
-								type: 'select',
-								label: 'Action',
-								fieldname: 'action',
-								options: ['', 'Scale Down', 'Scale Up'],
-							},
-							{
-								type: 'text',
-								label: 'Triggered By',
-								fieldname: 'owner',
-							},
-						];
+					{
+						name: 'Scheduled',
+						path: 'scheduled',
+						component: () =>
+							import('../components/server/AutoScaleScheduled.vue'),
 					},
-					orderBy: 'creation desc',
-					fields: ['owner'],
-					columns: [
-						{
-							label: 'Secondary Server',
-							fieldname: 'secondary_server',
-						},
-						{
-							label: 'Status',
-							fieldname: 'status',
-							type: 'Badge',
-							align: 'center',
-						},
-						{
-							label: 'Action',
-							fieldname: 'action',
-							type: 'Badge',
-							align: 'center',
-						},
-						{
-							label: 'Duration',
-							fieldname: 'modified',
-							type: 'int',
-							format(row, value) {
-								const created = new Date(value.creation);
-								const modified = new Date(value.modified);
-
-								const diff = modified - created;
-
-								if (diff < 0) return '-';
-
-								const seconds = Math.floor(diff / 1000);
-								const minutes = Math.floor(seconds / 60);
-								const hours = Math.floor(minutes / 60);
-
-								if (hours > 0) return `${hours}h ${minutes % 60}m`;
-								if (minutes > 0) return `${minutes}m ${seconds % 60}s`;
-
-								return `${seconds}s`;
-							},
-						},
-						{
-							label: 'Triggered By',
-							fieldname: 'owner',
-							align: 'center',
-						},
-						{
-							label: 'Triggered At',
-							fieldname: 'creation',
-							type: 'Timestamp',
-							align: 'right',
-						},
-					],
-					primaryAction({ documentResource: server, listResource: snapshots }) {
-						if (
-							server?.doc?.status === 'Archived' ||
-							!server?.doc?.secondary_server
-						)
-							return;
-						return {
-							label: 'Schedule Auto Scale',
-							slots: {
-								prefix: icon('clock'),
-							},
-							onClick() {
-								renderDialog(
-									h(
-										defineAsyncComponent(
-											() =>
-												import(
-													'../components/server/AutoscaleScheduleDialog.vue'
-												),
-										),
-										{
-											server: server.name,
-										},
-									),
-								);
-							},
-						};
-					},
+				],
+				component: defineAsyncComponent(
+					() => import('../components/server/AutoScaleTabs.vue'),
+				),
+				props: (server) => {
+					return {
+						server: server.doc.name,
+					};
 				},
 			},
 			tagTab('Server'),
@@ -1103,6 +1049,11 @@ export default {
 			name: 'Server Play',
 			path: 'plays/:id',
 			component: () => import('../pages/PlayPage.vue'),
+		},
+		{
+			name: 'Auto Scale Steps',
+			path: 'auto-scale-steps/:id',
+			component: () => import('../components/server/AutoScaleSteps.vue'),
 		},
 	],
 };

@@ -32,12 +32,13 @@ from press.press.doctype.site_migration.site_migration import (
 	get_ongoing_migration,
 	process_site_migration_job_update,
 )
+from press.press.doctype.telegram_message.telegram_message import TelegramMessage
 from press.utils import log_error, timer
 
 AGENT_LOG_KEY = "agent-jobs"
 AGENT_JOB_TIMEOUT_HOURS = 4
 
-BYPASS_AGENT_JOB_HALT = ["Change Bench Directory"]
+BYPASS_AGENT_JOB_HALT = ["Change Bench Directory", "Remove Redis Localhost Bind"]
 
 
 class AgentJob(Document):
@@ -939,6 +940,12 @@ def update_job_ids_for_delivered_jobs(delivered_jobs):
 		)
 
 
+def is_site_archived(site: str | None) -> bool:
+	if not site:
+		return False
+	return frappe.db.get_value("Site", site, "status") == "Archived"
+
+
 def process_job_updates(job_name: str, response_data: dict | None = None):  # noqa: C901
 	job: "AgentJob" = frappe.get_doc("Agent Job", job_name)
 	start = now_datetime()
@@ -1025,7 +1032,11 @@ def process_job_updates(job_name: str, response_data: dict | None = None):  # no
 
 		site_migration = get_ongoing_migration(job.site)
 		if site_migration:
-			process_site_migration_job_update(job, site_migration)
+			process_site_migration_job_update(
+				job, site_migration
+			)  # has to be at top to prevent regular callbacks from running
+		elif is_site_archived(job.site):
+			return
 		elif job.job_type == "Add Upstream to Proxy":
 			process_new_server_job_update(job)
 		elif job.job_type == "New Bench":
@@ -1266,3 +1277,56 @@ def update_query_result_status_timestamps(results):
 
 		if result.end:
 			result.end = convert_utc_to_system_timezone(result.end).replace(tzinfo=None)
+
+
+def agent_poll_count_stats(from_datetime, to_datetime, min_count, duration):
+	rows = frappe.get_all(
+		"Scheduled Job Log",
+		filters=[
+			["creation", ">=", from_datetime],
+			["creation", "<", to_datetime],
+			["scheduled_job_type", "=", "agent_job.poll_pending_jobs"],
+		],
+		fields=["DATE_FORMAT(creation, '%Y-%m-%d %H:%i:00') as timestamp", "count(*) as count"],
+		order_by="timestamp ASC",
+		group_by="timestamp",
+	)
+	found = {frappe.utils.get_datetime(row["timestamp"]): row["count"] for row in rows}
+	total_count = sum(found.values())
+	average_count = total_count / len(found)
+	filtered_data = {key: value for key, value in found.items() if value < 10}
+	sorted_dict = dict(sorted(filtered_data.items(), key=lambda item: item[1]))
+	top_min_count = dict(list(sorted_dict.items())[:min_count])
+
+	telegram_message = f"""Agent Polling Count {duration} Report
+
+	Average Count: {average_count:.2f}
+
+	Top {min_count} Minimum Values (≤10):
+	"""
+
+	if top_min_count:
+		for i, item in enumerate(top_min_count, 1):
+			timestamp_str = frappe.utils.format_datetime(item, "dd MMM yyyy, HH:mm")
+			telegram_message = telegram_message + f"\n{i}. 🕒 {timestamp_str} → Count: {top_min_count[item]}"
+	else:
+		telegram_message = telegram_message + "\nNo entries found with count ≤ 10"
+
+	telegram_message = telegram_message + f"\n\nFound {len(filtered_data)} entries with count ≤ 10"
+	TelegramMessage.enqueue(message=telegram_message, topic="Signups")
+
+
+def agent_poll_count_stats_hourly():
+	min_count = 3
+	duration = "Hourly"
+	start_time = frappe.utils.add_to_date(None, hours=-1)
+	end_time = frappe.utils.add_to_date(None, minutes=-1)
+	agent_poll_count_stats(start_time, end_time, min_count, duration)
+
+
+def agent_poll_count_stats_daily():
+	min_count = 12
+	duration = "Daily"
+	start_time = frappe.utils.add_to_date(None, hours=-24)
+	end_time = frappe.utils.add_to_date(None, minutes=-1)
+	agent_poll_count_stats(start_time, end_time, min_count, duration)

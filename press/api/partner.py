@@ -3,13 +3,25 @@ import json
 import frappe
 from frappe.core.utils import find
 from frappe.desk.form.load import get_docinfo
+from frappe.query_builder import Case
+from frappe.query_builder.functions import Count, Sum
 from frappe.utils import flt
 from frappe.utils.data import add_days, add_months, get_first_day, get_last_day, today
+from frappe.utils.user import is_system_user
 
+from press.guards import role_guard
 from press.utils import get_current_team
 
 
+def is_lead_team(lead):
+	team = get_current_team()
+	if (frappe.db.get_value("Partner Lead", lead, "partner_team") == team) or is_system_user():
+		return True
+	return False
+
+
 @frappe.whitelist()
+@role_guard.api("partner")
 def approve_partner_request(key):
 	partner_request_doc = frappe.get_doc("Partner Approval Request", {"key": key})
 	if partner_request_doc and partner_request_doc.status == "Pending":
@@ -36,19 +48,13 @@ def approve_partner_request(key):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def get_partner_request_status(team):
 	return frappe.db.get_value("Partner Approval Request", {"requested_by": team}, "status")
 
 
 @frappe.whitelist()
-def update_partnership_date(team, partnership_date):
-	if team:
-		team_doc = frappe.get_doc("Team", team)
-		team_doc.partnership_date = partnership_date
-		team_doc.save()
-
-
-@frappe.whitelist()
+@role_guard.api("partner")
 def update_website_info(website_info):
 	from press.utils.billing import get_frappe_io_connection, is_frappe_auth_disabled
 
@@ -64,16 +70,21 @@ def update_website_info(website_info):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def get_partner_details(partner_email):
 	from press.utils.billing import get_frappe_io_connection, is_frappe_auth_disabled
 
 	if is_frappe_auth_disabled():
 		return None
 
+	team = get_current_team(get_doc=True)
+	if team.partner_email != partner_email:
+		return None
+
 	client = get_frappe_io_connection()
 	data = client.get_doc(
 		"Partner",
-		filters={"email": partner_email, "enabled": 1},
+		filters={"email": partner_email},
 		fields=[
 			"name",
 			"email",
@@ -86,6 +97,12 @@ def get_partner_details(partner_email):
 			"introduction",
 			"customers",
 			"custom_process_maturity_level",
+			"phone_number",
+			"address",
+			"custom_foundation_date",
+			"custom_team_size",
+			"custom_successful_projects_count",
+			"custom_journey_blog_link",
 		],
 	)
 	if data:
@@ -95,6 +112,7 @@ def get_partner_details(partner_email):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def send_link_certificate_request(user_email, certificate_type):
 	if not frappe.db.exists(
 		"Partner Certificate", {"partner_member_email": user_email, "course": certificate_type}
@@ -114,6 +132,7 @@ def send_link_certificate_request(user_email, certificate_type):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def approve_certificate_link_request(key):
 	cert_req_doc = frappe.get_doc("Certificate Link Request", {"key": key})
 	cert_req_doc.status = "Approved"
@@ -125,12 +144,17 @@ def approve_certificate_link_request(key):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def get_resource_url():
 	return frappe.db.get_value("Press Settings", "Press Settings", "drive_resource_link")
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def get_partner_name(partner_email):
+	team = get_current_team(get_doc=True)
+	if team.partner_email != partner_email:
+		return None
 	return frappe.db.get_value(
 		"Team",
 		{"partner_email": partner_email, "enabled": 1, "erpnext_partner": 1},
@@ -139,15 +163,20 @@ def get_partner_name(partner_email):
 
 
 @frappe.whitelist()
-def transfer_credits(amount, customer, partner):
+@role_guard.api("partner")
+def transfer_credits(amount, customer):
 	# partner discount map
-	DISCOUNT_MAP = {"Entry": 0, "Emerging": 0.10, "Bronze": 0.10, "Silver": 0.15, "Gold": 0.20}
+	DISCOUNT_MAP = {"Entry": 0.10, "Emerging": 0.10, "Bronze": 0.15, "Silver": 0.20, "Gold": 0.25}
+
+	partner = get_current_team(get_doc=True)
+	if not partner.erpnext_partner and partner.partner_status != "Active":
+		frappe.throw("Only Partner team can transfer credits.")
 
 	amt = frappe.utils.flt(amount)
 	partner_doc = frappe.get_doc("Team", partner)
 	credits_available = partner_doc.get_balance()
 	partner_level = partner_doc.get_partner_level()
-	discount_percent = DISCOUNT_MAP.get(partner_level)
+	discount_percent = DISCOUNT_MAP.get(partner_level[0]) if partner_level else 0
 
 	if credits_available < amt:
 		frappe.throw(f"Insufficient Credits to transfer. Credits Available: {credits_available}")
@@ -178,7 +207,12 @@ def transfer_credits(amount, customer, partner):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def get_partner_contribution_list(partner_email):
+	team = get_current_team(get_doc=True)
+	if team.partner_email != partner_email:
+		return None
+
 	partner_currency = frappe.db.get_value(
 		"Team", {"erpnext_partner": 1, "partner_email": partner_email}, "currency"
 	)
@@ -206,75 +240,78 @@ def get_partner_contribution_list(partner_email):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def get_partner_mrr(partner_email):
+	team = get_current_team(get_doc=True)
+	if team.partner_email != partner_email:
+		return None
+
 	partner_currency = frappe.db.get_value(
 		"Team", {"erpnext_partner": 1, "partner_email": partner_email}, "currency"
 	)
-	query = frappe.db.sql(
-		f"""
-			SELECT
-				i.due_date,
-				SUM(
-					CASE
-						WHEN '{partner_currency}' = i.currency THEN i.total_before_discount
-						WHEN '{partner_currency}' = 'INR' AND i.currency = 'USD' THEN i.total_before_discount * 83
-						WHEN '{partner_currency}' = 'USD' AND i.currency = 'INR' THEN i.total_before_discount / 83
-						ELSE i.total_before_discount
-					END
-				) as total_amount
-			FROM tabInvoice as i
-			WHERE
-				i.partner_email = '{partner_email}'
-				AND i.type = 'Subscription'
-				AND i.status = 'Paid'
-			GROUP BY
-				i.due_date
-			ORDER BY i.due_date DESC
-			LIMIT 12
-		""",
-		as_dict=True,
+
+	Invoice = frappe.qb.DocType("Invoice")
+	case_stmt = Case()
+
+	if partner_currency == "INR":
+		case_stmt.when(Invoice.currency == "USD", Invoice.total_before_discount * 83)
+		case_stmt.when(Invoice.currency == "INR", Invoice.total_before_discount)
+	elif partner_currency == "USD":
+		case_stmt.when(Invoice.currency == "INR", Invoice.total_before_discount / 83)
+		case_stmt.when(Invoice.currency == "USD", Invoice.total_before_discount)
+
+	case_stmt.else_(Invoice.total_before_discount)
+
+	query = (
+		frappe.qb.from_(Invoice)
+		.select(Invoice.due_date, case_stmt.as_("total_amount"))
+		.where(
+			(Invoice.partner_email == partner_email)
+			& (Invoice.type == "Subscription")
+			& (Invoice.status == "Paid")
+		)
+		.groupby(Invoice.due_date)
+		.orderby(Invoice.due_date, order=frappe.qb.desc)
+		.limit(12)
 	)
-	return [d for d in query]
+	result = query.run(as_dict=True)
+	return [d for d in result]
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def get_dashboard_stats():
 	team = get_current_team(get_doc=True)
-	data = frappe.db.sql(
-		f"""
-			SELECT
-				site.plan as plan,
-				COUNT(site.name) as count
-			FROM
-				tabSite as site JOIN tabTeam as team ON site.team = team.name
-			WHERE
-				team.name = '{team.name}'
-				AND site.status = 'Active'
-			GROUP BY
-				site.plan
-		""",
-		as_dict=True,
+	Site = frappe.qb.DocType("Site")
+	Team = frappe.qb.DocType("Team")
+	query = (
+		frappe.qb.from_(Site)
+		.select((Site.plan).as_("plan"), Count(Site.name).as_("count"))
+		.join(Team)
+		.on(Site.team == Team.name)
+		.where((Team.name == team.name) & (Site.status == "Active"))
+		.groupby(Site.plan)
 	)
+	data = query.run(as_dict=True)
 	return [d for d in data]
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def get_lead_stats():
 	team = get_current_team(get_doc=True)
-	data = frappe.db.sql(
-		f"""
-			SELECT
-				COUNT(name) as total,
-				SUM(CASE WHEN status in ('Open', 'In Process') THEN 1 ELSE 0 END) as open,
-				SUM(CASE WHEN status = 'Won' THEN 1 ELSE 0 END) as won,
-				SUM(CASE WHEN status = 'Lost' THEN 1 ELSE 0 END) as lost
-			FROM
-				`tabPartner Lead`
-			WHERE
-				partner_team = '{team.name}'
-		""",
-		as_dict=True,
+	Lead = frappe.qb.DocType("Partner Lead")
+	query = (
+		frappe.qb.from_(Lead)
+		.select(
+			Count(Lead.name).as_("total"),
+			Sum(Case().when(Lead.status.isin(["Open", "In Process"]), 1).else_(0)).as_("open"),
+			Sum(Case().when(Lead.status == "Won", 1).else_(0)).as_("won"),
+			Sum(Case().when(Lead.status == "Lost", 1).else_(0)).as_("lost"),
+		)
+		.where(Lead.partner_team == team.name)
 	)
+	data = query.run(as_dict=True)
 	return data[0] if data else {}
 
 
@@ -283,13 +320,17 @@ def get_user_by_name(email):
 
 
 @frappe.whitelist()
-def get_lead_activities(name):
+@role_guard.api("partner")
+def get_lead_activities(name):  # noqa: C901
+	if not is_lead_team(name):
+		return None
+
+	doc = frappe.db.get_values("Partner Lead", name, ["creation", "owner"])[0]
 	get_docinfo("", "Partner Lead", name)
 	res = frappe.response["docinfo"]
 	doc_meta = frappe.get_meta("Partner Lead")
 	fields = {field.fieldname: {"label": field.label, "options": field.options} for field in doc_meta.fields}
 
-	doc = frappe.db.get_values("Partner Lead", name, ["creation", "owner"])[0]
 	activities = []
 	activities.append(
 		{"activity_type": "creation", "creation": doc[0], "owner": doc[1], "data": "created this lead"}
@@ -303,7 +344,7 @@ def get_lead_activities(name):
 			continue
 
 		if change := data.get("changed")[0]:
-			field = fields.get(change[0], None)
+			field = fields.get(change[0])
 			if not field or (not change[1] and not change[2]):
 				continue
 
@@ -342,17 +383,18 @@ def get_lead_activities(name):
 		}
 		activities.append(activity)
 
-		for comment in res.comments:
-			activity = {
-				"name": comment.name,
-				"activity_type": "comment",
-				"creation": comment.creation,
-				"owner": get_user_by_name(comment.owner),
-				"content": comment.content,
-			}
-			activities.append(activity)
+	for comment in res.comments:
+		activity = {
+			"name": comment.name,
+			"activity_type": "comment",
+			"creation": comment.creation,
+			"owner": get_user_by_name(comment.owner),
+			"content": comment.content,
+			# "attachments": get_attachments("Comment", comment.name),
+		}
+		activities.append(activity)
 
-	activities.sort(key=lambda x: x.get("creation"), reverse=True)
+	activities.sort(key=lambda x: x.get("creation"), reverse=False)
 	activities = handle_multiple_versions(activities)
 
 	return activities  # noqa: RET504
@@ -397,6 +439,38 @@ def parse_grouped_versions(versions):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
+def get_certification_requests():
+	from frappe.frappeclient import FrappeClient
+
+	team = get_current_team()
+	cert_requests = frappe.get_all(
+		"Partner Certificate Request",
+		{"partner_team": team},
+		["partner_member_name", "partner_member_email", "course"],
+	)
+
+	for d in cert_requests:
+		d["course"] = "erpnext" if d["course"] == "erpnext-distribution" else "framework"
+		d["email"] = d["partner_member_email"]
+
+	press_settings = frappe.get_cached_doc("Press Settings")
+	school_url = press_settings.school_url
+	api_key = press_settings.school_api_key
+	api_secret = press_settings.get_password("school_api_secret")
+
+	client = FrappeClient(school_url, api_key=api_key, api_secret=api_secret)
+	res = client.get_api("get-certificate-request-status", {"data": json.dumps(cert_requests)})
+
+	if res:
+		for d in res:
+			d["course"] = "ERPNext" if d["course"] == "erpnext" else "Framework"
+
+	return res
+
+
+@frappe.whitelist()
+@role_guard.api("partner")
 def get_partner_invoices(due_date=None, status=None):
 	partner_email = get_current_team(get_doc=True).partner_email
 
@@ -420,7 +494,11 @@ def get_partner_invoices(due_date=None, status=None):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def get_invoice_items(invoice):
+	team = get_current_team()
+	if team != frappe.db.get_value("Invoice", invoice, "team"):
+		return None
 	data = frappe.get_all(
 		"Invoice Item",
 		{"parent": invoice},
@@ -436,7 +514,11 @@ def get_invoice_items(invoice):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def get_current_month_partner_contribution(partner_email):
+	team = get_current_team(get_doc=True)
+	if team.partner_email != partner_email:
+		return None
 	partner_currency = frappe.db.get_value(
 		"Team", {"erpnext_partner": 1, "partner_email": partner_email}, "currency"
 	)
@@ -468,7 +550,11 @@ def get_current_month_partner_contribution(partner_email):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def get_prev_month_partner_contribution(partner_email):
+	team = get_current_team(get_doc=True)
+	if team.partner_email != partner_email:
+		return None
 	partner_currency = frappe.db.get_value(
 		"Team", {"erpnext_partner": 1, "partner_email": partner_email}, "currency"
 	)
@@ -508,6 +594,7 @@ def get_prev_month_partner_contribution(partner_email):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def calculate_partner_tier(contribution, currency):
 	partner_tier = frappe.qb.DocType("Partner Tier")
 	query = frappe.qb.from_(partner_tier).select(partner_tier.name)
@@ -525,6 +612,7 @@ def calculate_partner_tier(contribution, currency):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def add_partner(referral_code: str):
 	team = get_current_team(get_doc=True)
 	partner = frappe.get_doc("Team", {"partner_referral_code": referral_code}).name
@@ -548,6 +636,7 @@ def add_partner(referral_code: str):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def validate_partner_code(code):
 	partner = frappe.db.get_value(
 		"Team",
@@ -560,6 +649,7 @@ def validate_partner_code(code):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def get_partner_customers():
 	team = get_current_team(get_doc=True)
 	customers = frappe.get_all(
@@ -571,19 +661,8 @@ def get_partner_customers():
 
 
 @frappe.whitelist()
-def get_partner_members(partner):
-	from press.utils.billing import get_frappe_io_connection
-
-	client = get_frappe_io_connection()
-	return client.get_list(
-		"LMS Certificate",
-		filters={"partner": partner},
-		fields=["member_name", "member_email", "course", "version"],
-	)
-
-
-@frappe.whitelist()
-def get_partner_leads(lead_name=None, status=None, engagement_stage=None):
+@role_guard.api("partner")
+def get_partner_leads(lead_name=None, status=None, engagement_stage=None, source=None):
 	team = get_current_team()
 	filters = {"partner_team": team}
 	if lead_name:
@@ -592,18 +671,21 @@ def get_partner_leads(lead_name=None, status=None, engagement_stage=None):
 		filters["status"] = status
 	if engagement_stage:
 		filters["engagement_stage"] = engagement_stage
+	if source:
+		filters["lead_source"] = source
 	return frappe.get_all(
 		"Partner Lead",
 		filters,
 		["name", "organization_name", "lead_name", "status", "lead_source", "partner_team"],
+		order_by="modified desc",
 	)
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def change_partner(lead_name, partner):
-	team = get_current_team()
 	doc = frappe.get_doc("Partner Lead", lead_name)
-	if doc.partner_team != team:
+	if not is_lead_team(lead_name):
 		frappe.throw("You are not allowed to change the partner for this lead")
 
 	doc.partner_team = partner
@@ -612,6 +694,7 @@ def change_partner(lead_name, partner):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def remove_partner():
 	team = get_current_team(get_doc=True)
 	if team.payment_mode == "Paid By Partner":
@@ -630,8 +713,17 @@ def remove_partner():
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def apply_for_certificate(member_name, certificate_type):
 	team = get_current_team(get_doc=True)
+	if not team.erpnext_partner and team.partner_status != "Active":
+		frappe.throw("Only Active Partner team can apply for certificates.")
+
+	if frappe.db.exists(
+		"Partner Certificate Request", {"partner_member_email": member_name, "course": certificate_type}
+	):
+		frappe.throw("A certificate request already exists for this team member and course.")
+
 	doc = frappe.new_doc("Partner Certificate Request")
 	doc.update(
 		{
@@ -644,7 +736,11 @@ def apply_for_certificate(member_name, certificate_type):
 
 
 @frappe.whitelist()
-def get_partner_teams(company=None, email=None, country=None, tier=None):
+@role_guard.api("partner")
+def get_partner_teams(company=None, email=None, country=None, tier=None, active_only=False):
+	if not is_system_user(frappe.session.user):
+		frappe.throw("Only system users can access partner teams.")
+
 	filters = {"enabled": 1, "erpnext_partner": 1}
 	if company:
 		filters["company_name"] = ("like", f"%{company}%")
@@ -654,7 +750,9 @@ def get_partner_teams(company=None, email=None, country=None, tier=None):
 		filters["country"] = ("like", f"%{country}%")
 	if tier:
 		filters["partner_tier"] = tier
-	print(filters)
+	if active_only:
+		filters["partner_status"] = "Active"
+
 	teams = frappe.get_all(
 		"Team",
 		filters,
@@ -664,6 +762,7 @@ def get_partner_teams(company=None, email=None, country=None, tier=None):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def get_local_payment_setup():
 	team = get_current_team()
 	data = frappe._dict()
@@ -673,20 +772,20 @@ def get_local_payment_setup():
 
 
 @frappe.whitelist()
-def get_certificate_users():
-	users = frappe.get_all("Partner Certificate", ["partner_member_email", "partner_member_name"])
-	return users  # noqa: RET504
-
-
-@frappe.whitelist()
+@role_guard.api("partner")
 def get_lead_details(lead_id):
+	if not is_lead_team(lead_id):
+		return None
 	return frappe.get_doc("Partner Lead", lead_id).as_dict()
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def update_lead_details(lead_name, lead_details):
 	lead_details = frappe._dict(lead_details)
 	doc = frappe.get_doc("Partner Lead", lead_name)
+	if not is_lead_team(lead_name):
+		frappe.throw("You are not allowed to update this lead")
 	doc.update(
 		{
 			"organization_name": lead_details.organization_name,
@@ -700,6 +799,7 @@ def update_lead_details(lead_name, lead_details):
 			"plan_proposed": lead_details.plan_proposed,
 			"requirement": lead_details.requirement,
 			"probability": lead_details.probability,
+			"engagement_stage": lead_details.engagement_stage,
 		}
 	)
 	doc.save(ignore_permissions=True)
@@ -707,8 +807,14 @@ def update_lead_details(lead_name, lead_details):
 
 
 @frappe.whitelist()
-def update_lead_status(lead_name, status, **kwargs):
+@role_guard.api("partner")
+def update_lead_status(lead_name, status, **kwargs):  # noqa: C901
+	if not is_lead_team(lead_name):
+		frappe.throw("You are not allowed to update this lead")
+
+	doc = frappe.get_doc("Partner Lead", lead_name)
 	status_dict = {"status": status}
+
 	if status == "In Process":
 		status_dict.update(
 			{
@@ -723,11 +829,44 @@ def update_lead_status(lead_name, status, **kwargs):
 				}
 			)
 	elif status == "Won":
+		hosting = kwargs.get("hosting")
+		site = kwargs.get("site_url")
+		server = kwargs.get("server_name")
+		team = kwargs.get("team_name")
+
+		if hosting == "Frappe Cloud":
+			if server:
+				Server = frappe.qb.DocType("Server")
+				query = (
+					frappe.qb.from_(Server)
+					.select(Server.name)
+					.where((Server.status == "Active") & ((Server.title == server) | (Server.name == server)))
+				)
+				result = query.run(as_dict=True)
+				if not result:
+					frappe.throw("Server not found in Frappe Cloud")
+
+			elif team and not frappe.db.exists("Team", {"user": team, "enabled": 1}):
+				frappe.throw("Team not found in Frappe Cloud")
+
+			elif site:
+				Site = frappe.qb.DocType("Site")
+				query = (
+					frappe.qb.from_(Site)
+					.select(Site.name)
+					.where((Site.status == "Active") & ((Site.name == site) | (Site.host_name == site)))
+				)
+				result = query.run(as_dict=True)
+				if not result:
+					frappe.throw("Site not found in Frappe Cloud")
+
 		status_dict.update(
 			{
-				"conversion_date": kwargs.get("conversion_date"),
-				"hosting": kwargs.get("hosting"),
-				"site_url": kwargs.get("site_url"),
+				"conversion_date": frappe.utils.getdate(),
+				"hosting": hosting,
+				"site_url": site,
+				"server_name": server,
+				"team_name": team,
 			}
 		)
 	elif status == "Lost":
@@ -737,12 +876,29 @@ def update_lead_status(lead_name, status, **kwargs):
 				"lost_reason_specify": kwargs.get("other_reason"),
 			}
 		)
+	elif status == "Passed to Other Partner":
+		status_dict = {}
+		status_dict.update(
+			{
+				"partner_team": "",
+				"company_name": "",
+				"partner_email": "",
+				"partner_manager": "",
+				"status": "Open",
+			}
+		)
 
-	frappe.db.set_value("Partner Lead", lead_name, status_dict)
+	doc.update(status_dict)
+	doc.save(ignore_permissions=True)
+	doc.reload()
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def fetch_followup_details(id, lead):
+	if not is_lead_team(lead):
+		return None
+
 	return frappe.get_all(
 		"Lead Followup",
 		{"parent": lead, "name": id, "parenttype": "Partner Lead"},
@@ -760,12 +916,25 @@ def fetch_followup_details(id, lead):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def check_certificate_exists(email, type):
 	return frappe.db.count("Partner Certificate", {"partner_member_email": email, "course": type})
 
 
 @frappe.whitelist()
+def get_fc_plans():
+	site_plans = frappe.get_all(
+		"Site Plan", {"enabled": 1, "document_type": "Site", "price_inr": (">", 0)}, pluck="name"
+	)
+	return [*site_plans, "Dedicated Server", "Managed Press"]
+
+
+@frappe.whitelist()
+@role_guard.api("partner")
 def update_followup_details(id, lead, followup_details):
+	if not is_lead_team(lead):
+		frappe.throw("You are not allowed to update this followup")
+
 	followup_details = frappe._dict(followup_details)
 	if id:
 		doc = frappe.get_doc("Lead Followup", id)
@@ -802,8 +971,13 @@ def update_followup_details(id, lead, followup_details):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def add_new_lead(lead_details):
 	lead_details = frappe._dict(lead_details)
+	team = get_current_team(get_doc=True)
+	if not team.erpnext_partner and team.partner_status != "Active":
+		frappe.throw("Only Active Partner team can add new leads.")
+
 	doc = frappe.new_doc("Partner Lead")
 	doc.update(
 		{
@@ -827,6 +1001,7 @@ def add_new_lead(lead_details):
 
 
 @frappe.whitelist()
+@role_guard.api("partner")
 def can_apply_for_certificate():
 	from press.utils.billing import get_frappe_io_connection
 
@@ -838,5 +1013,6 @@ def can_apply_for_certificate():
 
 
 @frappe.whitelist()
-def delete_followup(id, lead_name):
+@role_guard.api("partner")
+def delete_followup(id):
 	frappe.delete_doc("Lead Followup", id)

@@ -4,6 +4,7 @@
 
 import frappe
 import frappe.utils
+from frappe import _
 from frappe.model.document import Document
 from frappe.query_builder import Criterion, JoinType
 from frappe.query_builder.functions import Count
@@ -23,7 +24,7 @@ class SupportAccess(Document):
 		from press.press.doctype.support_access_resource.support_access_resource import SupportAccessResource
 
 		access_allowed_till: DF.Datetime | None
-		allowed_for: DF.Literal["3", "6", "12", "24", "72"]
+		allowed_for: DF.Literal["3", "6", "12", "24", "72", "168"]
 		bench_ssh: DF.Check
 		login_as_administrator: DF.Check
 		reason: DF.SmallText | None
@@ -83,6 +84,7 @@ class SupportAccess(Document):
 		self.requested_by = self.requested_by or frappe.session.user
 		self.requested_team = self.requested_team or get_current_team()
 		self.set_expiry()
+		self.resolve_sites()
 		self.add_release_group()
 
 	def add_release_group(self):
@@ -136,6 +138,18 @@ class SupportAccess(Document):
 		hours = frappe.utils.cint(self.allowed_for)
 		if hours and doc_before and doc_before.status != self.status and self.status == "Accepted":
 			self.access_allowed_till = frappe.utils.add_to_date(frappe.utils.now_datetime(), hours=hours)
+
+	def resolve_sites(self):
+		for resource in self.resources:
+			if resource.document_type == "Site":
+				resource.document_name = self.resolve_site_name(resource.document_name)
+
+	def resolve_site_name(self, site) -> str:
+		try:
+			domain = frappe.get_doc("Site Domain", site)
+			return domain.site
+		except frappe.DoesNotExistError:
+			return site
 
 	def validate(self):
 		self.validate_status_change()
@@ -194,6 +208,15 @@ class SupportAccess(Document):
 		if len(teams) != 1:
 			frappe.throw("Resources must belong to the same team")
 		self.target_team = teams.pop()
+
+	def validate_validity_change(self):
+		is_target_team = get_current_team() == self.target_team
+		if self.has_value_changed("allowed_for") and not is_target_team:
+			message = _("You are not allowed to change the validity period.")
+			frappe.throw(message, frappe.ValidationError)
+		if self.status != "Pending":
+			message = _("Cannot change validity period of a processed request.")
+			frappe.throw(message, frappe.ValidationError)
 
 	def after_insert(self):
 		self.notify_on_request()

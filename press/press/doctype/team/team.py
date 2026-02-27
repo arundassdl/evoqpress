@@ -11,8 +11,9 @@ from frappe import _
 from frappe.contacts.address_and_contact import load_address_and_contact
 from frappe.core.utils import find
 from frappe.model.document import Document
+from frappe.query_builder.functions import Count
 from frappe.rate_limiter import rate_limit
-from frappe.utils import get_fullname, get_last_day, get_url_to_form, getdate, random_string
+from frappe.utils import add_to_date, get_fullname, get_last_day, get_url_to_form, getdate, random_string
 
 from press.api.client import dashboard_whitelist
 from press.exceptions import FrappeioServerNotSet
@@ -47,6 +48,7 @@ class Team(Document):
 
 		account_request: DF.Link | None
 		apply_npo_discount: DF.Check
+		banned: DF.Check
 		benches_enabled: DF.Check
 		billing_address: DF.Link | None
 		billing_name: DF.Data | None
@@ -73,6 +75,7 @@ class Team(Document):
 		free_account: DF.Check
 		free_credits_allocated: DF.Check
 		github_access_token: DF.Data | None
+		hybrid_servers_enabled: DF.Check
 		introduction: DF.SmallText | None
 		is_code_server_user: DF.Check
 		is_developer: DF.Check
@@ -92,6 +95,7 @@ class Team(Document):
 		partner_tier: DF.Link | None
 		partnership_date: DF.Date | None
 		payment_mode: DF.Literal["", "Card", "Prepaid Credits", "Paid By Partner"]
+		phone_number: DF.Phone | None
 		razorpay_enabled: DF.Check
 		receive_budget_alerts: DF.Check
 		referrer_id: DF.Data | None
@@ -145,6 +149,7 @@ class Team(Document):
 		"receive_budget_alerts",
 		"monthly_alert_threshold",
 		"company_name",
+		"hybrid_servers_enabled",
 	)
 
 	def get_doc(self, doc):
@@ -190,6 +195,9 @@ class Team(Document):
 		doc.communication_infos = self.get_communication_infos()
 		doc.receive_budget_alerts = self.receive_budget_alerts
 		doc.monthly_alert_threshold = self.monthly_alert_threshold
+		doc.is_binlog_indexer_enabled = not frappe.db.get_single_value(
+			"Press Settings", "disable_binlog_indexer_service", cache=True
+		)
 
 	def onload(self):
 		load_address_and_contact(self)
@@ -213,6 +221,7 @@ class Team(Document):
 		self.unset_saas_team_type_if_required()
 		self.validate_disable()
 		self.validate_billing_team()
+		self.reject_reenabling_team_for_banned_team()
 
 	def before_insert(self):
 		self.currency = "INR" if self.country == "India" else "USD"
@@ -246,6 +255,10 @@ class Team(Document):
 			frappe.throw(
 				"Cannot set payment mode to Paid By Partner. Please finalize and settle the pending invoices first"
 			)
+
+	def reject_reenabling_team_for_banned_team(self):
+		if self.has_value_changed("enabled") and self.enabled == 1 and self.banned:
+			frappe.throw(f"{self.user} is banned. Please signup with a different email or contact support.")
 
 	def delete(self, force=False, workflow=False):
 		if not (force or workflow):
@@ -281,23 +294,34 @@ class Team(Document):
 		self.add_comment("Info", "enabled account")
 
 	@classmethod
-	def create_new(
+	def create_new(  # noqa: C901
 		cls,
 		account_request: AccountRequest,
 		first_name: str,
 		last_name: str,
 		password: str | None = None,
 		country: str | None = None,
+		phone: str | None = None,
 		is_us_eu: bool = False,
 		via_erpnext: bool = False,
 		user_exists: bool = False,
 	):
 		"""Create new team along with user (user created first)."""
+		# Get full phone number with country code
+		full_phone = None
+		if phone and country:
+			dialing_code = get_country_dialing_code(country)
+			if dialing_code:
+				full_phone = f"+{dialing_code}-{phone}"
+			else:
+				full_phone = phone
+
 		team: "Team" = frappe.get_doc(
 			{
 				"doctype": "Team",
 				"user": account_request.email,
 				"country": country,
+				"phone_number": full_phone,
 				"enabled": 1,
 				"via_erpnext": via_erpnext,
 				"is_us_eu": is_us_eu,
@@ -358,6 +382,7 @@ class Team(Document):
 		password=None,
 		role=None,
 		press_roles=None,
+		skip_validations=False,
 	):
 		user = frappe.db.get_value("User", email, ["name"], as_dict=True)
 		if not user:
@@ -367,7 +392,10 @@ class Team(Document):
 		self.save(ignore_permissions=True)
 
 		for role in press_roles or []:
-			frappe.get_doc("Press Role", role.press_role).add_user(user.name)
+			frappe.get_doc("Press Role", role.press_role).add_user(
+				user.name,
+				skip_validations=skip_validations,
+			)
 
 	@dashboard_whitelist()
 	def remove_team_member(self, member):
@@ -380,8 +408,8 @@ class Team(Document):
 			roles = (
 				frappe.qb.from_(PressRole)
 				.join(PressRoleUser)
-				.on(PressRole.name == PressRoleUser.parent)
-				.where(PressRoleUser.user == member)
+				.on((PressRoleUser.parent == PressRole.name) & (PressRoleUser.user == member))
+				.where(PressRole.team == self.name)
 				.select(PressRole.name)
 				.run(as_dict=True, pluck="name")
 			)
@@ -514,6 +542,17 @@ class Team(Document):
 		frappe.local.login_manager.login_as(user)
 
 	@frappe.whitelist()
+	def ban(self):
+		frappe.only_for("System Manager")
+		self.banned = 1
+		self.enabled = 0
+		linked_user = frappe.get_doc("User", self.user)
+		linked_user.enabled = 0
+		linked_user.save(ignore_permissions=True)
+		self.save(ignore_permissions=True)
+		self.suspend_sites(reason="Team banned")
+
+	@frappe.whitelist()
 	def enable_erpnext_partner_privileges(self):
 		self.erpnext_partner = 1
 		if not self.partner_email:
@@ -522,12 +561,14 @@ class Team(Document):
 		self.servers_enabled = 1
 		self.partner_status = "Active"
 		self.save(ignore_permissions=True)
+		frappe.get_doc("User", self.user).add_roles("Partner")
 		self.create_partner_referral_code()
 
 	@frappe.whitelist()
 	def disable_erpnext_partner_privileges(self):
 		self.partner_status = "Inactive"
 		self.save(ignore_permissions=True)
+		frappe.get_doc("User", self.user).remove_roles("Partner")
 
 	def create_partner_referral_code(self):
 		if not self.partner_referral_code:
@@ -818,6 +859,32 @@ class Team(Document):
 		stripe = get_stripe()
 		customer_object = stripe.Customer.retrieve(self.stripe_customer_id)
 		return (customer_object["balance"] * -1) / 100
+
+	def is_team_owner(self) -> bool:
+		"""
+		Checks if the current user is the owner of the team.
+		"""
+		return bool(frappe.db.get_value("Team", self.name, "user") == frappe.session.user)
+
+	def is_admin_user(self) -> bool:
+		"""
+		Checks if the current user has admin access in the team via roles.
+		"""
+		PressRole = frappe.qb.DocType("Press Role")
+		PressRoleUser = frappe.qb.DocType("Press Role User")
+		return (
+			frappe.qb.from_(PressRoleUser)
+			.left_join(PressRole)
+			.on(PressRole.name == PressRoleUser.parent)
+			.select(Count(PressRoleUser.name).as_("count"))
+			.where(PressRole.team == self.name)
+			.where(PressRoleUser.user == frappe.session.user)
+			.where(PressRole.admin_access == 1)
+			.run(as_dict=1)
+			.pop()
+			.get("count", 0)
+			> 0
+		)
 
 	@dashboard_whitelist()
 	def get_team_members(self):
@@ -1666,3 +1733,30 @@ def send_budget_alert_email(team_info, invoice):
 	except Exception as e:
 		frappe.log_error(f"Failed to send budget alert email: {team_info['user']}", {e})
 		return False
+
+
+def get_country_dialing_code(country_name: str) -> str | None:
+	"""Get the dialing code for a given country name using phonenumbers library."""
+	from phonenumbers import country_code_for_region
+
+	# Get the ISO 3166 ALPHA-2 code from Country doctype
+	country_code = frappe.db.get_value("Country", country_name, "code")
+	if not country_code:
+		return None
+
+	# phonenumbers expects uppercase country code
+	dialing_code = country_code_for_region(country_code.upper())
+	return str(dialing_code) if dialing_code else None
+
+
+def auto_enable_ssh_access_for_7_days_older_teams():
+	frappe.db.set_value(
+		"Team",
+		{
+			"enabled": 1,
+			"ssh_access_enabled": 0,
+			"creation": ("<", add_to_date(None, days=-7)),
+		},
+		"ssh_access_enabled",
+		1,
+	)

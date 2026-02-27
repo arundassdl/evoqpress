@@ -59,6 +59,8 @@
   "proxysql_admin_password",
   "proxysql_monitor_password",
   "is_proxysql_setup",
+  "memory_limits_section",
+  "mem_limits",
   "vpn_tab",
   "wireguard_network",
   "wireguard_network_ip",
@@ -166,7 +168,7 @@
    "fieldname": "provider",
    "fieldtype": "Select",
    "label": "Provider",
-   "options": "Generic\nScaleway\nAWS EC2\nOCI\nHetzner",
+   "options": "Generic\nScaleway\nAWS EC2\nOCI\nHetzner\nVodacom\nDigitalOcean",
    "set_only_once": 1
   },
   {
@@ -212,7 +214,7 @@
    "options": "Proxy Server Domain"
   },
   {
-   "depends_on": "eval:[\"AWS EC2\", \"OCI\", \"Hetzner\"].includes(doc.provider)",
+   "depends_on": "eval:[\"AWS EC2\", \"OCI\", \"Hetzner\", \"DigitalOcean\"].includes(doc.provider)",
    "fieldname": "virtual_machine",
    "fieldtype": "Link",
    "label": "Virtual Machine",
@@ -295,7 +297,8 @@
    "depends_on": "eval: doc.is_primary != 1",
    "fieldname": "is_replication_setup",
    "fieldtype": "Check",
-   "label": "Is Replication Setup"
+   "label": "Is Replication Setup",
+   "read_only": 1
   },
   {
    "default": "0",
@@ -464,10 +467,22 @@
    "fieldtype": "Link",
    "label": "Plan",
    "options": "Server Plan"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "memory_limits_section",
+   "fieldtype": "Section Break",
+   "label": "Memory Limits"
+  },
+  {
+   "fieldname": "mem_limits",
+   "fieldtype": "Code",
+   "options": "JSON",
+   "read_only": 1
   }
  ],
  "links": [],
- "modified": "2025-11-22 15:47:36.251776",
+ "modified": "2026-02-13 18:06:59.344863",
  "modified_by": "Administrator",
  "module": "Press",
  "name": "Proxy Server",

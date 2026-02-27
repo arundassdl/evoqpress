@@ -1,5 +1,7 @@
 import json
-import time
+import typing
+from collections.abc import Callable
+from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
 
@@ -21,6 +23,10 @@ from frappe.utils import cstr
 from frappe.utils import now_datetime as now
 
 from press.press.doctype.ansible_play.ansible_play import AnsiblePlay
+
+if typing.TYPE_CHECKING:
+	from press.press.doctype.agent_job.agent_job import AgentJob
+	from press.press.doctype.virtual_machine.virtual_machine import VirtualMachine
 
 
 def reconnect_on_failure():
@@ -287,6 +293,7 @@ class Status(str, Enum):
 	Pending = "Pending"
 	Running = "Running"
 	Success = "Success"
+	Skipped = "Skipped"
 	Failure = "Failure"
 
 	def __str__(self):
@@ -296,11 +303,18 @@ class Status(str, Enum):
 class GenericStep(Document):
 	attempt: int
 	job_type: Literal["Ansible Play", "Agent Job"]
-	job: str
+	job: str | None
 	status: Status
+	method_name: str
 
 
+@dataclass
 class StepHandler:
+	save: Callable
+	reload: Callable
+	doctype: str
+	name: str
+
 	def handle_vm_status_job(
 		self,
 		step: GenericStep,
@@ -311,8 +325,8 @@ class StepHandler:
 
 		# Try to sync status in every attempt
 		try:
-			virtual_machine = frappe.get_doc("Virtual Machine", virtual_machine)
-			virtual_machine.sync()
+			virtual_machine_doc: "VirtualMachine" = frappe.get_doc("Virtual Machine", virtual_machine)
+			virtual_machine_doc.sync()
 		except Exception:
 			pass
 
@@ -320,7 +334,11 @@ class StepHandler:
 		step.status = Status.Running if machine_status != expected_status else Status.Success
 		step.save()
 
-	def handle_agent_job(self, step: GenericStep, job: str) -> None:
+	def handle_agent_job(self, step: GenericStep, job: str, poll: bool = False) -> None:
+		if poll:
+			job_doc: AgentJob = frappe.get_doc("Agent Job", job)
+			job_doc.get_status()
+
 		job_status = frappe.db.get_value("Agent Job", job, "status")
 
 		status_map = {
@@ -353,6 +371,7 @@ class StepHandler:
 		ansible: Ansible,
 		e: Exception | None = None,
 	) -> None:
+		step.job_type = "Ansible Play"
 		step.job = getattr(ansible, "play", None)
 		step.status = Status.Failure
 		step.output = str(e)
@@ -363,32 +382,19 @@ class StepHandler:
 		step.output = str(e)
 		step.save()
 
-	def fail(self):
-		self.status = Status.Failure
+	def fail(self, failure_status: str = Status.Failure):
+		self.status = failure_status
 		self.save()
 		frappe.db.commit()
 
-	def succeed(self):
-		self.status = Status.Success
+	def succeed(self, success_status: str = Status.Success):
+		self.status = success_status
 		self.save()
 		frappe.db.commit()
 
 	def handle_step_failure(self):
-		team = frappe.db.get_value("Server", self.primary_server, "team")
-		press_notification = frappe.get_doc(
-			{
-				"doctype": "Press Notification",
-				"team": team,
-				"type": "Auto Scale",
-				"document_type": self.doctype,
-				"document_name": self.name,
-				"class": "Error",
-				"traceback": frappe.get_traceback(with_context=False),
-				"message": "Error occurred during auto scale",
-			}
-		)
-		press_notification.insert()
-		frappe.db.commit()
+		# can be implemented by the controller
+		pass
 
 	def get_steps(self, methods: list) -> list[dict]:
 		"""Generate a list of steps to be executed for NFS volume attachment."""
@@ -401,41 +407,67 @@ class StepHandler:
 			for method in methods
 		]
 
-	def _get_method(self, method_name: str):
+	def _get_method(self, method_name: str, method_objects: list[object] | None = None):
 		"""Retrieve a method object by name."""
+		method_objects = method_objects or []
+		for method_object in method_objects:
+			if hasattr(method_object, method_name):
+				return getattr(method_object, method_name)
 		return getattr(self, method_name)
 
 	def next_step(self, steps: list[GenericStep]) -> GenericStep | None:
 		for step in steps:
-			if step.status not in (Status.Success, Status.Failure):
+			if step.status not in (Status.Success, Status.Failure, Status.Skipped):
 				return step
 
 		return None
 
-	def _execute_steps(self, steps: list[GenericStep]):
-		"""Sequentially execute defined NFS attachment steps."""
-		self.status = Status.Running
+	def _execute_steps(
+		self,
+		steps: list[GenericStep],
+		commit: bool = False,
+		start_status: str = Status.Running,
+		success_status: str = Status.Success,
+		failure_status: str = Status.Failure,
+		method_objects: list[object] | None = None,
+	):
+		"""It is now required to be with a `enqueue_doc` else the first step executes in the web worker"""
+		self.status = start_status
 		self.save()
-		frappe.db.commit()
 
-		while True:
-			step = self.next_step(steps)
-			if not step:
-				break  # We are done here
+		step = self.next_step(steps)
+		if not step:
+			self.succeed(success_status)
+			return
 
-			step = step.reload()
-			method = self._get_method(step.method_name)
+		# Run a single step in this job
+		step = step.reload()
+		method = self._get_method(method_objects=method_objects, method_name=step.method_name)
 
-			try:
-				method(step)  # Each step updates its own state
-			except Exception:
-				self.reload()
-				self.fail()
-				self.handle_step_failure()
-				return  # Stop on first failure
-
+		try:
+			method(step)
+		except Exception:
 			self.reload()
-			frappe.db.commit()
-			time.sleep(1)
+			self.fail(failure_status)
+			self.handle_step_failure()
+			return
 
-		self.succeed()
+		if commit:
+			frappe.db.commit()
+
+		# After step completes, queue the next step
+		frappe.enqueue_doc(
+			self.doctype,
+			self.name,
+			"_execute_steps",
+			method_objects=method_objects,
+			steps=steps,
+			commit=commit,
+			start_status=start_status,
+			success_status=success_status,
+			failure_status=failure_status,
+			timeout=18000,
+			at_front=True,
+			queue="long",
+			enqueue_after_commit=True,
+		)
