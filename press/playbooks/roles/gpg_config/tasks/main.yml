@@ -1,0 +1,34 @@
+---
+- name: Ensure trusted.gpg.d directory exists
+  file:
+    path: /etc/apt/trusted.gpg.d
+    state: directory
+    mode: '0755'
+    owner: root
+    group: root
+
+- name: Ensure GPG keys are configured | Ubuntu
+  shell: |
+    gpg --quiet --with-fingerprint /etc/apt/trusted.gpg 2>/dev/null || \
+    ls /etc/apt/trusted.gpg.d/*.gpg 2>/dev/null
+  register: gpg_check
+  changed_when: false
+  failed_when: false
+
+- name: Display GPG key status
+  debug:
+    msg: "{{ gpg_check.stdout_lines | default(['No keys found - this may be acceptable if using trusted.gpg.d']) }}"
+
+
+- name: Ensure package manager repositories are configured
+  block:
+    - name: "List package manager repositories"
+      shell: apt list
+      changed_when: no
+      register: repolist
+
+    - name: "Display package manager repositories list"
+      debug:
+        msg:
+            - "Please check against site policy repos listed below match expected:"
+            - "{{ repolist.stdout_lines }}"
