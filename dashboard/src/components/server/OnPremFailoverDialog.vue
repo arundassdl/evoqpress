@@ -63,7 +63,7 @@
 							<tr>
 								<td>ID</td>
 								<td>{{ appServerStatusFlags?.id }}</td>
-								<td>{{ appServerStatusFlags?.id }}</td>
+								<td>{{ databaseServerStatusFlags?.id }}</td>
 							</tr>
 							<tr>
 								<td>Wireguard Setup</td>
@@ -165,8 +165,8 @@
 								2. Install Necessary Tools
 							</div>
 							<ClickToCopyField
-								text-content="sudo apt update
-apt install -y wireguard resolvconf rsync awk curl wget"
+								text-content="apt update -y
+apt install -y wireguard resolvconf rsync gawk curl wget"
 							/>
 						</div>
 						<!-- Configure Wireguard -->
@@ -186,8 +186,7 @@ apt install -y wireguard resolvconf rsync awk curl wget"
 								4. Start Wireguard Service
 							</div>
 							<ClickToCopyField
-								text-content="wg-quick up wg0
-systemctl enable --now wg-quick@wg0"
+								text-content="systemctl enable --now wg-quick@wg0"
 							/>
 						</div>
 						<!-- Trigger Replication Setup -->
@@ -219,7 +218,7 @@ systemctl enable --now wg-quick@wg0"
 										runningPressJobType
 											? `Running ${runningPressJobType}...`
 											: `Start On-Prem
-                                    Replication Setup`
+									Replication Setup`
 									}}
 								</Button>
 							</div>
@@ -228,7 +227,12 @@ systemctl enable --now wg-quick@wg0"
 				</div>
 
 				<!-- Jobs -->
-				<div class="text-base font-medium text-gray-800 mt-4">Recent Jobs</div>
+				<div
+					class="text-base font-medium text-gray-800 mt-4"
+					v-if="jobs && jobs.length"
+				>
+					Recent Jobs
+				</div>
 				<div>
 					<div
 						v-for="job in jobs"
@@ -422,7 +426,7 @@ export default {
 			return this.onPremFailoverConfig?.status?.app_server || {};
 		},
 		databaseServerStatusFlags() {
-			return this.onPremFailoverConfig?.status?.database_server || {};
+			return this.onPremFailoverConfig?.status?.db_server || {};
 		},
 		wireguardConfig() {
 			return this.onPremFailoverConfig?.wireguard_config || '';
