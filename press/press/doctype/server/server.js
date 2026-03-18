@@ -76,6 +76,7 @@ frappe.ui.form.on('Server', {
 				frm.doc.is_server_setup,
 			],
 			[__('Get Static IP'), 'get_static_ip', false],
+			[__('Update DNS Record', 'create_dns_record', true)],
 			[__('Setup Logrotate'), 'setup_logrotate', true, frm.doc.is_server_setup],
 			[
 				__('Setup PySpy'),
@@ -250,13 +251,6 @@ frappe.ui.form.on('Server', {
 			],
 			[__('Scale Up'), 'scale_up', true, !frm.doc.scaled_up],
 			[__('Scale Down'), 'scale_down', true, frm.doc.scaled_up],
-			[__('Setup Firewall'), 'setup_firewall', true, frm.doc.is_server_setup],
-			[
-				__('Teardown Firewall'),
-				'teardown_firewall',
-				true,
-				frm.doc.is_server_setup,
-			],
 			[
 				__('Install Wazuh Agent'),
 				'install_wazuh_agent',
@@ -274,6 +268,18 @@ frappe.ui.form.on('Server', {
 				'setup_wildcard_hosts',
 				true,
 				frm.doc.is_server_setup && frm.doc.is_standalone_setup,
+			],
+			[
+				__('Install NAT iptables'),
+				'install_nat_iptables',
+				true,
+				frm.doc.is_server_setup && frm.doc.nat_server,
+			],
+			[
+				__('Remove NAT iptables'),
+				'remove_nat_iptables',
+				true,
+				frm.doc.is_server_setup && !frm.doc.nat_server,
 			],
 		].forEach(([label, method, confirm, condition]) => {
 			if (typeof condition === 'undefined' || condition) {
