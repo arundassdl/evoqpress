@@ -8,6 +8,7 @@
     remote: upstream
     version: '{% if agent_branch is defined and agent_branch is truthy %} {{ agent_branch }} {% else %} master {% endif %}'
     update: yes
+    force: yes
 
 - name: Install Agent
   become: yes
@@ -75,12 +76,66 @@
     dest: /home/frappe/agent/logs
     state: directory
 
+#- name: Install setuptools in agent virtualenv
+#  become: yes
+#  become_user: frappe
+#  command: /home/frappe/agent/env/bin/pip install --upgrade setuptools
+#  args:
+#    chdir: /home/frappe/agent
+
+#- name: Upgrade Jinja2 for Python 3.12 compatibility
+#  become: yes
+#  become_user: frappe
+#  command: /home/frappe/agent/env/bin/pip install "jinja2>=3.1.0" "MarkupSafe>=2.0" --force-reinstall
+#  args:
+#    chdir: /home/frappe/agent
+
+#- name: Setup Agent Supervisor
+# become: yes
+#  become_user: frappe
+#  command: /home/frappe/agent/env/bin/agent setup supervisor
+#  args:
+#    chdir: /home/frappe/agent
+
+- name: Install setuptools in agent virtualenv
+  become: yes
+  become_user: frappe
+  command: /home/frappe/agent/env/bin/pip install "setuptools<81" --upgrade
+  args:
+    chdir: /home/frappe/agent
+
+- name: Upgrade Flask and Jinja2 for Python 3.12 compatibility
+  become: yes
+  become_user: frappe
+  command: >
+    /home/frappe/agent/env/bin/pip install
+    "flask>=2.3.0"
+    "jinja2>=3.1.0"
+    "MarkupSafe>=2.0"
+    --force-reinstall
+  args:
+    chdir: /home/frappe/agent
+
 - name: Setup Agent Supervisor
   become: yes
   become_user: frappe
   command: /home/frappe/agent/env/bin/agent setup supervisor
   args:
     chdir: /home/frappe/agent
+
+- name: Reload supervisor configuration
+  command: supervisorctl reread
+
+- name: Update supervisor processes
+  command: supervisorctl update
+
+- name: Start Agent processes
+  supervisorctl:
+    name: "agent:"
+    state: started
+  register: agent_start
+  failed_when: agent_start.failed and 'already started' not in agent_start.msg | default('')
+
 
 - name: Create NGINX Root Configuration File
   become: yes
@@ -123,22 +178,67 @@
   become: yes
   become_user: frappe
   copy:
-    content: '{{ certificate_private_key }}'
+    #content: '{{ certificate_private_key }}'
+    content: /etc/letsencrypt/live/evoq.app/privkey.pem
     dest: /home/frappe/agent/tls/privkey.pem
 
 - name: Setup Agent TLS (Full Chain)
   become: yes
   become_user: frappe
   copy:
-    content: '{{ certificate_full_chain }}'
+   # content: '{{ certificate_full_chain }}'
+    content: /etc/letsencrypt/live/evoq.app/fullchain.pem
     dest: /home/frappe/agent/tls/fullchain.pem
 
 - name: Setup Agent TLS (Intermediate Chain)
   become: yes
   become_user: frappe
   copy:
-    content: '{{ certificate_intermediate_chain }}'
+    #content: '{{ certificate_intermediate_chain }}'
+    content: /etc/letsencrypt/live/evoq.app/chain.pem
     dest: /home/frappe/agent/tls/chain.pem
+
+- name: Check if fullchain.pem is empty
+  stat:
+    path: /home/frappe/agent/tls/fullchain.pem
+  register: fullchain_stat
+
+- name: Fallback - Copy fullchain.pem from letsencrypt
+  copy:
+    src: /etc/letsencrypt/live/evoq.app/fullchain.pem
+    dest: /home/frappe/agent/tls/fullchain.pem
+    owner: frappe
+    group: frappe
+    remote_src: yes
+  when: fullchain_stat.stat.size == 0
+
+- name: Check if privkey.pem is empty
+  stat:
+    path: /home/frappe/agent/tls/privkey.pem
+  register: privkey_stat
+
+- name: Fallback - Copy privkey.pem from letsencrypt
+  copy:
+    src: /etc/letsencrypt/live/evoq.app/privkey.pem
+    dest: /home/frappe/agent/tls/privkey.pem
+    owner: frappe
+    group: frappe
+    remote_src: yes
+  when: privkey_stat.stat.size == 0
+
+- name: Check if chain.pem is empty
+  stat:
+    path: /home/frappe/agent/tls/chain.pem
+  register: chain_stat
+
+- name: Fallback - Copy chain.pem from letsencrypt
+  copy:
+    src: /etc/letsencrypt/live/evoq.app/chain.pem
+    dest: /home/frappe/agent/tls/chain.pem
+    owner: frappe
+    group: frappe
+    remote_src: yes
+  when: chain_stat.stat.size == 0
 
 - name: Setup Agent NGINX
   become: yes

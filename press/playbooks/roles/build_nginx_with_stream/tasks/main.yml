@@ -29,6 +29,7 @@
       - zlib1g-dev
       - libssl-dev
     state: present
+    update_cache: yes
   when: nginx_stream_check.rc != 0
 
 - name: Create build directory

@@ -7,13 +7,22 @@
 
 - name: Set Architecture
   set_fact:
-    arch: "{{'amd64' if (ansible_architecture == 'x86_64') else 'arm64'}}"
+    arch: "{{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }}"
 
 - name: Download StatsD Exporter Archive
+  shell: |
+    curl -fsSL \
+      https://github.com/prometheus/statsd_exporter/releases/download/v0.27.1/statsd_exporter-0.27.1.linux-{{ arch }}.tar.gz \
+      -o /tmp/statsd_exporter.tar.gz
+  args:
+    creates: /tmp/statsd_exporter.tar.gz
+
+- name: Extract StatsD Exporter Archive
   unarchive:
-    src: "https://github.com/prometheus/statsd_exporter/releases/download/v0.27.1/statsd_exporter-0.27.1.linux-{{ arch }}.tar.gz"
+    src: /tmp/statsd_exporter.tar.gz
     dest: /tmp
     remote_src: yes
+    creates: "/tmp/statsd_exporter-0.27.1.linux-{{ arch }}/statsd_exporter"
 
 - name: Copy StatsD Exporter Binary
   copy:
@@ -40,9 +49,20 @@
     group: root
     mode: 0644
 
-- name: Restart StatsD Exporter Service
+- name: Reload systemd daemon
   systemd:
     daemon_reload: true
+
+- name: Enable and Restart StatsD Exporter Service
+  systemd:
     name: statsd_exporter
     enabled: yes
     state: restarted
+
+- name: Cleanup StatsD Exporter Archive and extracted folder
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/statsd_exporter.tar.gz
+    - "/tmp/statsd_exporter-0.27.1.linux-{{ arch }}"

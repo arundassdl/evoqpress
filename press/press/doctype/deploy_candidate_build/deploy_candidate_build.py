@@ -1022,8 +1022,10 @@ class DeployCandidateBuild(Document):
 		else:
 			namespace = f"{settings.domain}"
 
-		self.docker_image_repository = f"{settings.docker_registry_url}/{namespace}/{self.group}"
-		self.docker_image_tag = self.name
+		#self.docker_image_repository = f"{settings.docker_registry_url}/{namespace}/{self.group}"
+		#self.docker_image_tag = self.name
+		self.docker_image_repository = f"{namespace}"
+		self.docker_image_tag = f"{self.group}-{self.name}"
 		self.docker_image = f"{self.docker_image_repository}:{self.docker_image_tag}"
 
 	def check_image_in_registry(self) -> bool:

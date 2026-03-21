@@ -1,8 +1,13 @@
 ---
+#- name: Update NGINX Repository Key
+#  apt_key:
+#    url: https://nginx.org/keys/nginx_signing.key
+#    state: present
 - name: Update NGINX Repository Key
-  apt_key:
-    url: https://nginx.org/keys/nginx_signing.key
-    state: present
+  shell: |
+    curl -fsSL https://nginx.org/keys/nginx_signing.key | gpg --dearmor -o /etc/apt/trusted.gpg.d/nginx.gpg
+  args:
+    creates: /etc/apt/trusted.gpg.d/nginx.gpg
 
 - name: Install Memory Allocators
   apt:

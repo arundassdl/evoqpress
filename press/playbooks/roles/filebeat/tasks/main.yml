@@ -17,10 +17,16 @@
   retries: 5
   delay: 120
 
+#- name: Add Elasticsearch Repository Key
+#  apt_key:
+#    url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
+#    state: present
+
 - name: Add Elasticsearch Repository Key
-  apt_key:
-    url: https://artifacts.elastic.co/GPG-KEY-elasticsearch
-    state: present
+  shell: |
+    curl -fsSL https://artifacts.elastic.co/GPG-KEY-elasticsearch | gpg --dearmor -o /etc/apt/trusted.gpg.d/elasticsearch.gpg
+  args:
+    creates: /etc/apt/trusted.gpg.d/elasticsearch.gpg
 
 - name: Add Elasticsearch Repository
   apt_repository:

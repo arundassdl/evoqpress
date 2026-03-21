@@ -9,11 +9,19 @@
   set_fact:
     arch: "{{'amd64' if (ansible_architecture == 'x86_64') else 'arm64'}}"
 
+#- name: Download Node Exporter Archive
+#  unarchive:
+#    src: "https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-{{ arch }}.tar.gz"
+#    dest: /tmp
+#    remote_src: yes
+
 - name: Download Node Exporter Archive
-  unarchive:
-    src: "https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-{{ arch }}.tar.gz"
-    dest: /tmp
-    remote_src: yes
+  shell: |
+    cd /tmp
+    wget -q https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-{{ arch }}.tar.gz
+    tar -xzf node_exporter-1.8.2.linux-{{ arch }}.tar.gz
+  args:
+    creates: /tmp/node_exporter-1.8.2.linux-{{ arch }}
 
 - name: Copy Node Exporter Binary
   copy:
